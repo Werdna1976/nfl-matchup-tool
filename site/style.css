@@ -14,25 +14,25 @@
   --bar: #8aa9d6;
   --bar-hi: #1f6feb;
   --shadow: 0 1px 2px rgba(0, 0, 0, .06), 0 4px 16px rgba(0, 0, 0, .06);
+  color-scheme: light;
 }
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0e1116;
-    --panel: #161b22;
-    --panel-2: #1d232c;
-    --line: #2b333e;
-    --text: #e6e9ee;
-    --muted: #9099a5;
-    --accent: #5b9dff;
-    --good: #3fb871;
-    --bad: #f0675b;
-    --warn: #d6a33a;
-    --band80: rgba(91, 157, 255, 0.16);
-    --band50: rgba(91, 157, 255, 0.34);
-    --bar: #3b5a86;
-    --bar-hi: #5b9dff;
-    --shadow: none;
-  }
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0e1116;
+  --panel: #161b22;
+  --panel-2: #1d232c;
+  --line: #2b333e;
+  --text: #e6e9ee;
+  --muted: #9099a5;
+  --accent: #5b9dff;
+  --good: #3fb871;
+  --bad: #f0675b;
+  --warn: #d6a33a;
+  --band80: rgba(91, 157, 255, 0.16);
+  --band50: rgba(91, 157, 255, 0.34);
+  --bar: #3b5a86;
+  --bar-hi: #5b9dff;
+  --shadow: none;
 }
 
 * { box-sizing: border-box; }
@@ -58,7 +58,7 @@ h3 { font-size: 15px; margin: 0 0 6px; }
 }
 .brand { display: flex; flex-direction: column; margin-right: auto; }
 .brand .muted { font-size: 12px; }
-.weeks { display: flex; gap: 6px; }
+.weeks { display: flex; flex-wrap: wrap; gap: 6px; }
 .weeks button, .chip, .btn {
   border: 1px solid var(--line); background: var(--panel-2); border-radius: 999px;
   padding: 5px 12px; cursor: pointer; white-space: nowrap;
@@ -68,6 +68,13 @@ h3 { font-size: 15px; margin: 0 0 6px; }
 .btn.add { background: transparent; color: var(--accent); border-color: var(--accent); padding: 3px 9px; font-size: 13px; }
 .btn.add:hover { background: var(--accent); color: #fff; }
 .slip-btn { background: var(--accent); color: #fff; border: 0; border-radius: 8px; padding: 7px 12px; cursor: pointer; }
+.sport { display: flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.sport a { padding: 5px 12px; text-decoration: none; color: var(--text); background: var(--panel-2); font-weight: 600; font-size: 14px; }
+.sport a + a { border-left: 1px solid var(--line); }
+.sport a[aria-current="page"] { background: var(--accent); color: #fff; }
+/* always in the top-right corner, whatever wraps beside it */
+.top { padding-right: 62px; }
+.theme-btn { position: absolute; top: 10px; right: 16px; border: 1px solid var(--line); background: var(--panel-2); border-radius: 8px; width: 34px; height: 32px; cursor: pointer; font-size: 16px; line-height: 1; }
 .slip-btn span { background: rgba(255,255,255,.25); border-radius: 999px; padding: 0 7px; margin-left: 4px; }
 
 main { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 16px; padding: 16px; max-width: 1400px; margin: 0 auto; }
@@ -166,7 +173,7 @@ td .rng { display: block; font-size: 11.5px; color: var(--muted); }
 .empty { padding: 30px; text-align: center; color: var(--muted); }
 
 @media (max-width: 600px) {
-  .top { position: static; }
+  .top { position: relative; }
   .scoreline .name { font-size: 14px; }
   .scoreline .pts { font-size: 20px; }
   .scoreline img { width: 32px; height: 32px; }
