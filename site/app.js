@@ -17,7 +17,7 @@ const STATS = {
   td: { label: "Receiving TDs", short: "Rec TD", dec: 2, count: true },
 };
 const POS_STATS = {
-  QB: ["att", "cmp", "pyd", "ptd", "int", "car", "ryd"],
+  QB: ["att", "cmp", "pyd", "ptd", "int", "car", "ryd", "rtd"],
   RB: ["car", "ryd", "rtd", "tgt", "rec", "yds"],
   WR: ["tgt", "rec", "yds", "td"],
   TE: ["tgt", "rec", "yds", "td"],
@@ -324,21 +324,27 @@ function renderGame() {
     </div>
 
     <div class="panel" id="players"></div>
+    <div class="panel" id="tds"></div>
     <div class="panel" id="finder"></div>
-    ${g.poly && g.poly.length ? `<div class="panel" id="poly">${polyHtml(g)}</div>` : ""}
   `;
-  renderTotalTool(g); renderSpreadTool(g); renderPlayers(g); renderFinder(g);
+  renderTotalTool(g); renderSpreadTool(g); renderPlayers(g); renderTds(g); renderFinder(g);
 }
 
-function lineTool(el, { title, sub, dist, def, min, max, overLabel, underLabel, legLabel }) {
+function lineTool(el, { title, sub, dist, def, min, max, overLabel, underLabel, legLabel, lines, rowLabel = (L) => L }) {
   el.innerHTML = `
     <div class="panel-head"><h2>${title}</h2><span class="muted small">${sub}</span></div>
     <div class="liner"><label class="small muted" for="${el.id}-in">Line</label>
       <input id="${el.id}-in" type="number" step="0.5" value="${def}">
       <input type="range" min="${min}" max="${max}" step="0.5" value="${def}" aria-label="Line">
     </div>
-    <div class="out"></div>`;
+    <div class="out"></div>
+    <div class="table-wrap"><table class="ladder">
+      <thead><tr><th>Line</th><th>${esc(overLabel("").replace(/[-+]?$/, "").trim() || "Over")}</th><th>${esc(underLabel("").replace(/[-+]?$/, "").trim() || "Under")}</th></tr></thead>
+      <tbody>${lines.map((L) => { const pr = probs(dist, L); return `<tr class="click" data-l="${L}"><td>${esc(rowLabel(L))}</td><td>${pct(pr.over)} <span class="price">${cents(pr.over)}</span></td><td>${pct(pr.under)} <span class="price">${cents(pr.under)}</span></td></tr>`; }).join("")}</tbody>
+    </table></div>
+    <div class="note">Tap a row to load that line above.</div>`;
   const num = el.querySelector('input[type="number"]'), rng = el.querySelector('input[type="range"]'), out = el.querySelector(".out");
+  el.querySelectorAll("tr[data-l]").forEach((tr) => tr.onclick = () => { num.value = rng.value = tr.dataset.l; update(tr.dataset.l); });
   const update = (v) => {
     const L = Number(v); const pr = probs(dist, L);
     out.innerHTML = `
@@ -366,6 +372,7 @@ function renderTotalTool(g) {
     title: "Total points", sub: `Center ${fmt(d.mean, 1)} · 80% of games land ${Math.round(quantile(0.1, d))}–${Math.round(quantile(0.9, d))}`,
     dist: d, def, min: Math.round(def - 15), max: Math.round(def + 15),
     overLabel: (L) => `Over ${L}`, underLabel: (L) => `Under ${L}`,
+    lines: Array.from({ length: 11 }, (_, i) => def - 10 + 2 * i),
     legLabel: (s, L) => `${g.away} @ ${g.home} ${s === "over" ? "Over" : "Under"} ${L} total points`,
   });
 }
@@ -380,7 +387,10 @@ function renderSpreadTool(g) {
   lineTool($("#spreadTool"), {
     title: "Point spread", sub: `${fav} projected to win by ${fmt(favDist.mean, 1)}`,
     dist: favDist, def, min: -14, max: 21,
-    overLabel: (L) => `${fav} ${L >= 0 ? "-" : "+"}${Math.abs(L)} covers`, underLabel: (L) => `${dog} ${L >= 0 ? "+" : "-"}${Math.abs(L)} covers`,
+    overLabel: (L) => L === "" ? `${fav} covers` : `${fav} ${L >= 0 ? "-" : "+"}${Math.abs(L)} covers`,
+    underLabel: (L) => L === "" ? `${dog} covers` : `${dog} ${L >= 0 ? "+" : "-"}${Math.abs(L)} covers`,
+    lines: Array.from({ length: 13 }, (_, i) => def - 6 + i).filter((L) => L > -14),
+    rowLabel: (L) => (L === 0 ? `${fav} PK` : `${fav} ${L > 0 ? "-" : "+"}${Math.abs(L)}`),
     legLabel: (s, L) => (s === "over" ? `${fav} ${L >= 0 ? "-" : "+"}${Math.abs(L)}` : `${dog} ${L >= 0 ? "+" : "-"}${Math.abs(L)}`) + ` (${g.away} @ ${g.home})`,
   });
 }
@@ -444,7 +454,7 @@ function renderPlayers(g) {
     if (!ps.length) return "";
     const keys = POS_STATS[pos];
     return `<h3>${pos}</h3><div class="table-wrap"><table>
-      <thead><tr><th>Player</th>${keys.map((k) => `<th>${STATS[k].short}</th>`).join("")}<th>Games</th></tr></thead>
+      <thead><tr><th>Player</th>${keys.map((k) => `<th>${STATS[k].short}</th>`).join("")}<th>Any TD</th><th>Games</th></tr></thead>
       <tbody>${ps.map((p) => {
         const pr = p.proj[g.id];
         const last = p.log.slice(-3);
@@ -456,7 +466,7 @@ function renderPlayers(g) {
             const rng = STATS[k].count ? `${pct(1 - poissonCdf(0, d.mean))} for 1+` : `${Math.round(quantile(0.1, d))}–${Math.round(quantile(0.9, d))}`;
             return `<td title="Season avg ${fmt(season, 1)} · last 3 avg ${fmt(l3, 1)}"><b>${fmt(d.mean, STATS[k].dec)}</b><span class="rng">${rng}</span></td>`;
           }).join("")}
-          <td>${p.log.length}</td></tr>`;
+          <td><b>${pct(anyTd(tdLambda(p, g)))}</b></td><td>${p.log.length}</td></tr>`;
       }).join("")}</tbody></table></div>`;
   }).join("");
   el.innerHTML = `
@@ -474,22 +484,14 @@ function renderPlayers(g) {
 
 // ---------------------------------------------------------------- alt-line finder
 
-function finderLine(d, k, conf, side) {
-  if (STATS[k].count) {
-    // touchdowns: "1+" (over 0.5) and "2+" (over 1.5) are the real markets
-    for (const L of side === "over" ? [1.5, 0.5] : [0.5, 1.5]) {
-      const pr = probs(d, L);
-      if ((side === "over" ? pr.over : pr.under) >= conf) return { L, p: side === "over" ? pr.over : pr.under };
-    }
-    return null;
-  }
+function finderLine(d, k, p, conf, side) {
+  const levels = ladder(k, p, d, 0.01, 0.99, Infinity);
   if (side === "over") {
-    let L = Math.floor(quantile(1 - conf, d)) - 0.5;
-    if (L < 1.5) return null;   // "over 0.5 receptions" style lines aren't worth a parlay leg
-    return { L, p: probs(d, L).over };
+    const ok = levels.filter((r) => r.p >= conf && (STATS[k].count || r.x >= 2));
+    return ok.length ? ok[ok.length - 1] : null;
   }
-  const L = Math.ceil(quantile(conf, d)) + 0.5;
-  return { L, p: probs(d, L).under };
+  const ok = levels.filter((r) => 1 - r.p >= conf);
+  return ok.length ? { x: ok[0].x, p: 1 - ok[0].p } : null;
 }
 
 function renderFinder(g) {
@@ -501,17 +503,18 @@ function renderFinder(g) {
       for (const k of FEATURED[p.pos]) {
         const d = p.proj[g.id][k];
         if (!d || d.mean < (STATS[k].count ? 0.05 : 1)) continue;
-        const r = finderLine(d, k, state.conf, state.side);
+        const r = finderLine(d, k, p, state.conf, state.side);
         if (!r) continue;
         const st = stability(p.log.map((x) => x[k]));
-        const hits = p.log.filter((x) => (state.side === "over" ? x[k] > r.L : x[k] < r.L)).length;
-        items.push({ p, k, d, L: r.L, prob: r.p, st, hits });
+        const hits = p.log.filter((x) => (state.side === "over" ? x[k] >= r.x : x[k] < r.x)).length;
+        items.push({ p, k, d, x: r.x, prob: r.p, st, hits });
       }
     }
   }
   items.sort((a, b) => (a.st.cv ?? 9) - (b.st.cv ?? 9));
+  const lineTxt = (it) => (state.side === "over" ? `${it.x}+` : `Under ${it.x}`);
   el.innerHTML = `
-    <div class="panel-head"><h2>Alt-line finder</h2><span class="muted small">The ${state.side} line each player should clear with your chosen confidence. Steadiest players first.</span></div>
+    <div class="panel-head"><h2>Alt-line finder</h2><span class="muted small">The ${state.side === "over" ? "highest" : "lowest"} Polymarket-style line each player should ${state.side === "over" ? "reach" : "stay under"} at your chosen confidence. Steadiest players first.</span></div>
     <div class="tabs">
       ${["over", "under"].map((s) => `<button class="chip" data-side="${s}" aria-pressed="${s === state.side}">${s === "over" ? "Overs" : "Unders"}</button>`).join("")}
       <span style="width:12px"></span>
@@ -522,7 +525,7 @@ function renderFinder(g) {
       <tbody>${items.map((it, i) => `<tr>
         <td><span class="pname">${esc(it.p.name)}</span><span class="pos-tag">${it.p.team} ${it.p.pos}</span>${injBadge(it.p)}</td>
         <td>${STATS[it.k].label}</td>
-        <td>${state.side === "over" ? "Over" : "Under"} ${it.L}</td>
+        <td>${lineTxt(it)}</td>
         <td><b>${pct(it.prob)}</b></td>
         <td>${cents(it.prob)}</td>
         <td>${it.hits} of ${it.p.log.length}</td>
@@ -534,8 +537,62 @@ function renderFinder(g) {
   el.querySelectorAll("[data-conf]").forEach((b) => b.onclick = () => { state.conf = Number(b.dataset.conf); renderFinder(g); });
   el.querySelectorAll("[data-i]").forEach((b) => b.onclick = () => {
     const it = items[Number(b.dataset.i)];
-    addLeg({ label: `${it.p.name} ${state.side === "over" ? "Over" : "Under"} ${it.L} ${STATS[it.k].label.toLowerCase()}`, p: it.prob, game: g.id });
+    addLeg({ label: `${it.p.name} ${lineTxt(it)} ${STATS[it.k].label.toLowerCase()}`, p: it.prob, game: g.id });
   });
+}
+
+// ---------------------------------------------------------------- anytime touchdowns
+
+function tdLambda(p, g) {
+  const pr = p.proj[g.id] || {};
+  return (pr.rtd?.mean || 0) + (pr.td?.mean || 0);
+}
+const anyTd = (lam) => 1 - Math.exp(-lam);
+const twoTd = (lam) => 1 - Math.exp(-lam) * (1 + lam);
+
+function renderTds(g) {
+  const el = $("#tds");
+  const items = [g.away, g.home].flatMap((tm) => playerRows(g, tm))
+    .filter((p) => p.inj?.status !== "Out")
+    .map((p) => ({ p, lam: tdLambda(p, g), scored: p.log.filter((r) => r.rtd + r.td > 0).length }))
+    .filter((it) => it.lam > 0.02)
+    .sort((a, b) => b.lam - a.lam);
+  el.innerHTML = `
+    <div class="panel-head"><h2>Anytime touchdown</h2><span class="muted small">Chance each player scores a rushing or receiving TD (QB passing TDs not counted).</span></div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Player</th><th>Anytime TD</th><th>Fair price</th><th>2+ TDs</th><th>Scored this season</th><th></th></tr></thead>
+      <tbody>${items.map((it, i) => `<tr>
+        <td><span class="pname">${esc(it.p.name)}</span><span class="pos-tag">${it.p.team} ${it.p.pos}</span>${injBadge(it.p)}</td>
+        <td><b>${pct(anyTd(it.lam))}</b></td><td>${cents(anyTd(it.lam))} · ${american(anyTd(it.lam))}</td>
+        <td>${pct(twoTd(it.lam))}</td><td>${it.scored} of ${it.p.log.length} games</td>
+        <td><button class="btn add" data-i="${i}">+ Slip</button></td></tr>`).join("")}</tbody>
+    </table></div>`;
+  el.querySelectorAll("[data-i]").forEach((b) => b.onclick = () => {
+    const it = items[Number(b.dataset.i)];
+    addLeg({ label: `${it.p.name} anytime TD`, p: anyTd(it.lam), game: g.id });
+  });
+}
+
+// ---------------------------------------------------------------- odds ladders
+
+// Polymarket's yardage steps: 25 for QB passing, 10 for lead backs and good receivers, 5 for TEs and depth receivers
+function stepFor(k, p, d) {
+  if (k === "pyd") return 25;
+  if (k === "ryd" || k === "yds") return (p.pos !== "TE" && d.mean >= 40) || d.mean >= 60 ? 10 : 5;
+  return 1;
+}
+
+// "X+" rows from very likely down to unlikely. p = chance of X or more.
+function ladder(k, p, d, qlo = 0.08, qhi = 0.93, maxRows = 16) {
+  if (STATS[k].count) return [1, 2, 3].map((x) => ({ x, p: probs(d, x - 0.5).over }));
+  const step = stepFor(k, p, d);
+  const lo = Math.max(step, Math.ceil(quantile(qlo, d) / step) * step);
+  const hi = Math.max(lo, Math.floor(quantile(qhi, d) / step) * step);
+  let s = step;
+  while ((hi - lo) / s > maxRows - 1) s += step;   // keep Polymarket's step unless the table would run past maxRows
+  const rows = [];
+  for (let x = lo; x <= hi; x += s) rows.push({ x, p: probs(d, x - 0.5).over });
+  return rows;
 }
 
 // ---------------------------------------------------------------- player detail
@@ -569,77 +626,108 @@ function chartSvg(log, k, d) {
   return s + "</svg>";
 }
 
+// the stat a player's view opens on: the prop people bet most for that position
+const MAIN_STAT = { QB: "pyd", RB: "ryd", WR: "yds", TE: "yds" };
+const pv = { n: 5, stat: null };
+
 function openPlayer(pid, g) {
+  const p = DATA.players[pid];
+  if (!pv.stat || !POS_STATS[p.pos].includes(pv.stat)) pv.stat = MAIN_STAT[p.pos];
+  renderPlayerView(pid, g);
+  $("#modal").hidden = false;
+  $("#modal").scrollTop = 0;
+}
+
+const avg = (vals) => (vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0);
+
+function renderPlayerView(pid, g) {
   const p = DATA.players[pid], pr = p.proj[g.id];
   const opp = p.team === g.home ? g.away : g.home;
   const keys = POS_STATS[p.pos];
+  const recent = p.log.slice(-pv.n).reverse();
+  const lam = tdLambda(p, g);
   const card = $("#modal .modal-card");
+  const rangeCell = (k) => {
+    const d = pr[k];
+    return STATS[k].count ? `${pct(1 - poissonCdf(0, d.mean))} for 1+` : `${Math.round(quantile(0.1, d))}–${Math.round(quantile(0.9, d))}`;
+  };
   card.innerHTML = `
     <div class="modal-head">
       ${p.img ? `<img src="${esc(p.img)}" alt="">` : ""}
-      <div><h2>${esc(p.name)} ${injBadge(p)}</h2><div class="muted">${esc(DATA.team_names[p.team])} ${p.pos} · vs ${esc(DATA.team_names[opp])} · ${p.log.length} games played</div>
-      ${p.inj ? `<div class="small muted">Injury report (week ${p.inj.wk}): ${esc(p.inj.injury || "–")}${p.inj.practice ? `, ${esc(p.inj.practice)}` : ""}</div>` : ""}</div>
+      <div><h2>${esc(p.name)} ${injBadge(p)}</h2>
+        <div class="muted">${esc(DATA.team_names[p.team])} ${p.pos} · vs ${esc(DATA.team_names[opp])} · ${p.log.length} games played</div>
+        <div class="small">Anytime TD <b>${pct(anyTd(lam))}</b> <span class="muted">(fair ${cents(anyTd(lam))}, ${american(anyTd(lam))})</span>
+          <button class="btn add" id="tdAdd">+ Slip</button></div>
+        ${p.inj ? `<div class="small muted">Injury report (week ${p.inj.wk}): ${esc(p.inj.injury || "–")}${p.inj.practice ? `, ${esc(p.inj.practice)}` : ""}</div>` : ""}</div>
       <button class="x" aria-label="Close">×</button>
     </div>
-    <div class="statcards">${keys.map((k) => statCard(p, k, pr[k], g)).join("")}</div>
-    <div class="panel" style="margin-top:12px"><h3>Game log</h3><div class="table-wrap"><table>
-      <thead><tr><th>Week</th><th>Opp</th>${keys.map((k) => `<th>${STATS[k].short}</th>`).join("")}</tr></thead>
-      <tbody>${p.log.slice().reverse().map((r) => `<tr><td>${r.w}</td><td>${esc(r.opp)}${r.tm !== p.team ? ` <span class="muted small">(${esc(r.tm)})</span>` : ""}</td>${keys.map((k) => `<td>${r[k]}</td>`).join("")}</tr>`).join("")}</tbody>
-    </table></div></div>`;
-  card.querySelector(".x").onclick = closeModal;
-  keys.forEach((k) => wireStatCard(card, p, k, pr[k], g));
-  $("#modal").hidden = false;
-}
 
-function statCard(p, k, d, g) {
-  const vals = p.log.map((r) => r[k]);
-  const season = vals.reduce((a, b) => a + b, 0) / vals.length;
-  const l3v = vals.slice(-3), l3 = l3v.reduce((a, b) => a + b, 0) / l3v.length;
-  const st = stability(vals);
-  const def = STATS[k].count ? 0.5 : Math.max(0.5, Math.round(d.mean) - 0.5);
-  const tdGames = vals.filter((v) => v > 0).length;
-  const factorTxt = d.f > 1.03 ? `Matchup and game script push this up ${Math.round((d.f - 1) * 100)}%.` : d.f < 0.97 ? `Matchup and game script pull this down ${Math.round((1 - d.f) * 100)}%.` : "Matchup is roughly neutral.";
-  return `<div class="statcard" data-k="${k}">
-    <div class="panel-head" style="margin:0"><h3>${STATS[k].label}</h3>
-      ${STATS[k].count ? `<span class="small muted">Scored in ${tdGames} of ${vals.length}</span>` : `<span class="stab ${st.cls}" title="Typical miss from average: ${st.cv != null ? Math.round(st.cv * 100) + "%" : "–"}">${st.label}</span>`}</div>
-    <div class="nums">
-      <div>Season avg<b>${fmt(season, 1)}</b></div>
-      <div>Last 3 avg<b>${fmt(l3, 1)}</b></div>
-      <div>${STATS[k].count ? "1+ chance" : "Typical swing"}<b>${STATS[k].count ? pct(1 - poissonCdf(0, d.mean)) : "±" + fmt(st.sd ?? 0, 0)}</b></div>
-      <div>Projection<b>${fmt(d.mean, STATS[k].dec === 2 ? 2 : 1)}</b></div>
+    <div class="panel">
+      <div class="panel-head"><h3>Recent games</h3>
+        <div class="tabs" style="margin:0">${[3, 5, 99].map((n) => `<button class="chip" data-n="${n}" aria-pressed="${n === pv.n}">${n === 99 ? "All" : `Last ${n}`}</button>`).join("")}</div></div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Week</th>${keys.map((k) => `<th>${STATS[k].short}</th>`).join("")}</tr></thead>
+        <tbody>
+          ${recent.map((r) => `<tr><td>Wk ${r.w} ${esc(r.opp)}${r.tm !== p.team ? ` <span class="muted small">(${esc(r.tm)})</span>` : ""}</td>${keys.map((k) => `<td>${r[k]}</td>`).join("")}</tr>`).join("")}
+          <tr class="sum"><td>Avg, ${pv.n === 99 ? "all" : `last ${recent.length}`}</td>${keys.map((k) => `<td>${fmt(avg(recent.map((r) => r[k])), 1)}</td>`).join("")}</tr>
+          <tr class="sum"><td>Season avg</td>${keys.map((k) => `<td>${fmt(avg(p.log.map((r) => r[k])), 1)}</td>`).join("")}</tr>
+          <tr class="sum proj"><td>Projected vs ${opp}</td>${keys.map((k) => `<td><b>${fmt(pr[k].mean, STATS[k].count ? 2 : 1)}</b></td>`).join("")}</tr>
+          <tr class="sum"><td>Expected range (80%)</td>${keys.map((k) => `<td>${rangeCell(k)}</td>`).join("")}</tr>
+          <tr class="sum"><td>Consistency</td>${keys.map((k) => { const st = stability(p.log.map((r) => r[k])); return STATS[k].count ? `<td class="muted small">${p.log.filter((r) => r[k] > 0).length} of ${p.log.length}</td>` : `<td><span class="stab ${st.cls}">${st.label}</span></td>`; }).join("")}</tr>
+        </tbody>
+      </table></div>
     </div>
-    ${chartSvg(p.log, k, d)}
-    <div class="small muted">${STATS[k].count ? "" : `50% range ${Math.round(quantile(0.25, d))}–${Math.round(quantile(0.75, d))} · 80% range ${Math.round(quantile(0.1, d))}–${Math.round(quantile(0.9, d))}. `}${factorTxt}</div>
-    <div class="liner"><label class="small muted">Line</label><input type="number" step="0.5" min="0" value="${def}"><span class="out"></span></div>
-  </div>`;
+
+    <div class="panel">
+      <div class="panel-head"><h3>Odds by line</h3><span class="muted small">Pick a stat</span></div>
+      <div class="tabs">${keys.map((k) => `<button class="chip" data-stat="${k}" aria-pressed="${k === pv.stat}">${STATS[k].label}</button>`).join("")}</div>
+      <div class="grid2" id="statDetail"></div>
+    </div>`;
+  card.querySelector(".x").onclick = closeModal;
+  card.querySelector("#tdAdd").onclick = () => addLeg({ label: `${p.name} anytime TD`, p: anyTd(lam), game: g.id });
+  card.querySelectorAll("[data-n]").forEach((b) => b.onclick = () => { pv.n = Number(b.dataset.n); renderPlayerView(pid, g); });
+  card.querySelectorAll("[data-stat]").forEach((b) => b.onclick = () => { pv.stat = b.dataset.stat; renderPlayerView(pid, g); });
+  renderStatDetail(p, pv.stat, pr[pv.stat], g);
 }
 
-function wireStatCard(card, p, k, d, g) {
-  const el = card.querySelector(`.statcard[data-k="${k}"]`);
+function renderStatDetail(p, k, d, g) {
+  const el = $("#statDetail");
+  const rows = ladder(k, p, d);
+  const vals = p.log.map((r) => r[k]);
+  const name = STATS[k].label.toLowerCase();
+  const factorTxt = d.f > 1.03 ? `Matchup and game script push this up ${Math.round((d.f - 1) * 100)}%.` : d.f < 0.97 ? `Matchup and game script pull this down ${Math.round((1 - d.f) * 100)}%.` : "Matchup is roughly neutral.";
+  el.innerHTML = `
+    <div>
+      <div class="table-wrap"><table class="ladder">
+        <thead><tr><th>Line</th><th>Chance</th><th>Fair price</th><th>Hit this season</th><th></th></tr></thead>
+        <tbody>${rows.map((r, i) => `<tr><td><b>${r.x}+</b></td><td><b>${pct(r.p)}</b></td><td>${cents(r.p)} · ${american(r.p)}</td>
+          <td>${vals.filter((v) => v >= r.x).length} of ${vals.length}</td>
+          <td><button class="btn add" data-i="${i}" data-s="yes">+ Yes</button> <button class="btn add" data-i="${i}" data-s="no">+ No</button></td></tr>`).join("")}</tbody>
+      </table></div>
+      <div class="liner"><label class="small muted">Other line</label><input type="number" step="0.5" min="0" value="${rows[Math.floor(rows.length / 2)]?.x ?? 1}"><span class="out"></span></div>
+    </div>
+    <div class="statcard">
+      <h3>${STATS[k].label} by game</h3>
+      ${chartSvg(p.log, k, d)}
+      <div class="small muted">Bars: each game (week and opponent). Dashed line: season average. Last column: this game's projection with its 50% (dark) and 80% (light) ranges. ${STATS[k].count ? "" : `50% range ${Math.round(quantile(0.25, d))}–${Math.round(quantile(0.75, d))}. `}${factorTxt}</div>
+    </div>`;
+  el.querySelectorAll("[data-i]").forEach((b) => b.onclick = () => {
+    const r = rows[Number(b.dataset.i)], yes = b.dataset.s === "yes";
+    addLeg({ label: `${p.name} ${yes ? `${r.x}+` : `under ${r.x}`} ${name}`, p: yes ? r.p : 1 - r.p, game: g.id });
+  });
   const input = el.querySelector("input"), out = el.querySelector(".out");
   const update = () => {
     const L = Number(input.value), pr = probs(d, L);
-    out.innerHTML = `<span class="prob">O <b>${pct(pr.over)}</b></span> <button class="btn add" data-s="over">+ Over</button>
-      <span class="prob">U <b>${pct(pr.under)}</b></span> <button class="btn add" data-s="under">+ Under</button>`;
-    out.querySelectorAll(".add").forEach((b) => b.onclick = () => addLeg({
-      label: `${p.name} ${b.dataset.s === "over" ? "Over" : "Under"} ${L} ${STATS[k].label.toLowerCase()}`,
-      p: b.dataset.s === "over" ? pr.over : pr.under, game: g.id,
+    out.innerHTML = `<span class="prob">Over <b>${pct(pr.over)}</b></span> <button class="btn add" data-o="over">+</button>
+      <span class="prob">Under <b>${pct(pr.under)}</b></span> <button class="btn add" data-o="under">+</button>`;
+    out.querySelectorAll("[data-o]").forEach((b) => b.onclick = () => addLeg({
+      label: `${p.name} ${b.dataset.o === "over" ? "Over" : "Under"} ${L} ${name}`, p: b.dataset.o === "over" ? pr.over : pr.under, game: g.id,
     }));
   };
   input.oninput = update; update();
 }
 
 function closeModal() { $("#modal").hidden = true; }
-
-// ---------------------------------------------------------------- polymarket
-
-function polyHtml(g) {
-  return `<div class="panel-head"><h2>Polymarket prices</h2><span class="muted small">Live prices when the data last updated. Price = market's implied chance.</span></div>
-    <div class="table-wrap"><table><thead><tr><th>Market</th><th>Prices</th></tr></thead><tbody>
-    ${g.poly.map((m) => `<tr><td><a href="${esc(m.url)}" target="_blank" rel="noopener">${esc(m.q)}</a></td>
-      <td>${m.o.map((o, i) => `${esc(o)} ${m.p[i] != null ? Math.round(m.p[i] * 100) + "¢" : "–"}`).join(" · ")}</td></tr>`).join("")}
-    </tbody></table></div>`;
-}
 
 // ---------------------------------------------------------------- slip
 

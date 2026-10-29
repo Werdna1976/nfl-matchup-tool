@@ -3,7 +3,6 @@
 Sources (all free, no keys):
   nflverse  - weekly player stats, team stats, schedule with betting lines, injuries
   ESPN      - fresher spread / total when reachable (optional)
-  Polymarket- game markets and prices when reachable (optional)
 
 Run:  python scripts/build_data.py            (current season)
       python scripts/build_data.py --season 2026
@@ -339,43 +338,6 @@ def espn_lines(season, week):
     return out
 
 
-def polymarket_events():
-    """Open NFL events on Polymarket with each market's question and prices."""
-    events = []
-    try:
-        for offset in range(0, 1000, 100):
-            url = ("https://gamma-api.polymarket.com/events?tag_slug=nfl&closed=false"
-                   f"&active=true&limit=100&offset={offset}")
-            page = json.loads(fetch(url, 20))
-            if not page:
-                break
-            events.extend(page)
-    except Exception as e:
-        print("Polymarket unavailable:", e)
-    print(f"Polymarket events: {len(events)}")
-    return events
-
-
-def match_polymarket(events, home, away):
-    hn, an = TEAM_NAMES[home].split()[-1].lower(), TEAM_NAMES[away].split()[-1].lower()
-    found = []
-    for ev in events:
-        title = (ev.get("title") or "").lower()
-        if hn in title and an in title:
-            for m in ev.get("markets", []):
-                try:
-                    outcomes = json.loads(m.get("outcomes") or "[]")
-                    prices = [float(p) for p in json.loads(m.get("outcomePrices") or "[]")]
-                except Exception:
-                    continue
-                if not outcomes or m.get("closed"):
-                    continue
-                found.append({"q": m.get("question") or m.get("groupItemTitle"),
-                              "o": outcomes, "p": prices,
-                              "url": f"https://polymarket.com/event/{ev.get('slug')}"})
-    return found[:80]
-
-
 # ---------------------------------------------------------------- assemble
 
 def current_week(sched):
@@ -412,7 +374,6 @@ def build(season):
     import backtest  # widen ranges by how well they covered past weeks
     calib = backtest.calibrate(backtest.run(season, data=(stats, team_stats, sched)))
     print("range multipliers:", calib)
-    polys = polymarket_events()
 
     inj_latest = {}
     if len(inj):
@@ -458,7 +419,7 @@ def build(season):
                 "away_ml": None if pd.isna(r.away_moneyline) else int(r.away_moneyline),
                 "roof": r.roof, "wind": None if pd.isna(r.wind) else int(r.wind),
                 "temp": None if pd.isna(r.temp) else int(r.temp),
-                "model": gm, "poly": match_polymarket(polys, home, away), "script": {},
+                "model": gm, "script": {},
                 "players": {home: [], away: []},
             }
             for tm, opp, sign in ((home, away, 1), (away, home, -1)):

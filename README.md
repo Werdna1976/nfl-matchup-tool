@@ -9,11 +9,12 @@ Built for picking alt lines and parlay legs on Polymarket.
 ## What's on the page
 
 - **Games**: spread, total, and moneyline for this week and next, plus a projected score.
-- **Total points and spread tools**: slide to any line and see the model's chance of over/under or cover, with the fair price in cents.
+- **Total points and spread tools**: slide to any line, or read the ladder of alternate lines, to see the model's chance of over/under or cover with the fair price in cents.
 - **Matchup strength**: each offense's passing and rushing vs. the opponent's pass and run defense, the expected pass rate, and implied team points.
 - **Player projections**: QBs, RBs, WRs, TEs with a projected average and an 80% range for attempts, completions, yards, targets, receptions, carries, TDs, and INTs.
-- **Player detail**: season and last-3 averages, how swingy the stat is, a game-by-game chart, and an over/under calculator for any line.
-- **Alt-line finder**: for a confidence level you pick (60–90%), the line each player should clear, sorted steadiest first.
+- **Player detail**: last 3/5/all games up top with averages, projection, and expected range for every stat. Pick a stat for an odds ladder at Polymarket's line steps (25 yds for QB passing, 10 for lead RBs and good WRs, 5 for TEs and depth WRs), plus a game-by-game chart.
+- **Anytime TD**: each player's chance of a rushing or receiving TD (and 2+), with fair price.
+- **Alt-line finder**: for a confidence level you pick (60–90%), the Polymarket-style line each player should clear, sorted steadiest first.
 - **Parlay slip**: add legs, type in Polymarket prices, see the combined chance and whether the price looks good.
 - **How the model works**: plain-language explanation plus its track record on past weeks this season.
 
@@ -23,7 +24,6 @@ Built for picking alt lines and parlay legs on Polymarket.
 |---|---|---|
 | Player and team stats, schedule, consensus lines, injuries | [nflverse](https://github.com/nflverse/nflverse-data) | No |
 | Fresher spread and total | ESPN public scoreboard | No |
-| Polymarket game markets and prices | Polymarket public API | No |
 
 A GitHub Action rebuilds the data every 3 hours and republishes the site. Each time the page
 loads (or you press **Refresh**), it also asks ESPN for the latest lines. If ESPN is blocked on
