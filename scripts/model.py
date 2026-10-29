@@ -17,7 +17,7 @@ POSITION_STATS = {
     "QB": [("attempts", "volume_pass"), ("completions", "volume_pass"),
            ("passing_yards", "yards_pass"), ("passing_tds", "td_pass"),
            ("passing_interceptions", "int"), ("carries", "volume_rush"),
-           ("rushing_yards", "yards_rush")],
+           ("rushing_yards", "yards_rush"), ("rushing_tds", "td_rush")],
     "RB": [("carries", "volume_rush"), ("rushing_yards", "yards_rush"),
            ("rushing_tds", "td_rush"), ("targets", "volume_pass"),
            ("receptions", "volume_pass"), ("receiving_yards", "yards_rec")],
