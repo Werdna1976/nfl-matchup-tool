@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NFL Matchup Lab</title>
+  <meta name="description" content="This week's NFL games, betting lines, player stat trends, matchup strength, and projected ranges for prop bets.">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <h1>NFL Matchup Lab</h1>
+      <span id="meta" class="muted"></span>
+    </div>
+    <nav id="weeks" class="weeks"></nav>
+    <button id="refreshBtn" class="btn" type="button" title="Reload stats and pull the latest betting lines">Refresh</button>
+    <button id="slipBtn" class="slip-btn" type="button">Parlay slip <span id="slipCount">0</span></button>
+  </header>
+
+  <main>
+    <section id="games" class="games" aria-label="Games"></section>
+    <section id="game" class="game"></section>
+  </main>
+
+  <aside id="slip" class="drawer" aria-label="Parlay slip" hidden></aside>
+  <div id="modal" class="modal" hidden><div class="modal-card" role="dialog" aria-modal="true"></div></div>
+
+  <footer class="foot muted">
+    Data: <a href="https://github.com/nflverse">nflverse</a> stats and consensus lines, ESPN and Polymarket when available.
+    Projections are estimates, not guarantees. <a href="#" id="howLink">How the model works</a>
+  </footer>
+  <script src="app.js"></script>
+</body>
+</html>
