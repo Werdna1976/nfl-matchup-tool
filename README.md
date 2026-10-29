@@ -1,4 +1,10 @@
-# NFL Matchup Lab
+# NFL & NBA Matchup Lab
+
+Two free web pages, one for NFL and one for NBA, switched with the NFL/NBA tabs in the top-left
+corner. The sun/moon button in the top-right corner flips between light and dark mode (it
+starts out matching your computer's setting and remembers your choice).
+
+## NFL page
 
 A free web page for this week's NFL games: betting lines, player stat trends, how steady each
 player is, matchup strength (pass and run), and a projected range for each player's key props.
@@ -18,12 +24,27 @@ Built for picking alt lines and parlay legs on Polymarket.
 - **Parlay slip**: add legs, type in Polymarket prices, see the combined chance and whether the price looks good.
 - **How the model works**: plain-language explanation plus its track record on past weeks this season.
 
+## NBA page
+
+**Live site:** https://werdna1976.github.io/nfl-matchup-tool/nba.html
+
+- **Game days**: today, tomorrow, and the next game day, with spread, total, moneyline, and projected score.
+- **Total points and spread tools**: same slider and ladder of alternate lines as the NFL page.
+- **Matchup strength**: scoring, 3-pointers, and rebounding for each offense vs. the opponent's defense, plus pace (more possessions means more stats for everyone).
+- **Player projections**: minutes, points, rebounds, assists, 3-pointers, PRA, steals, blocks, each with an 80% range, plus double-double chance.
+- **Player detail**: last 5/10/all recent games (early in the season this includes the end of last season, marked), averages, projection, 80% range, and consistency for every stat including P+R, P+A, R+A, steals + blocks, and turnovers. Pick a stat for an odds ladder: steps of 5 for points and point combos (2 for low scorers), 1 for rebounds, assists, threes, steals, blocks.
+- **Alt-line finder**, **parlay slip** (kept separate from the NFL slip), and **How the model works** with its track record.
+
+The NBA model projects minutes, then multiplies by each player's per-minute production, adjusted for pace, the opponent, and the betting market's implied team score. Early in the season it leans on the end of last season. Its 80% ranges were tested on past games: about 79% of results landed inside.
+
 ## Where the data comes from
 
 | What | Source | Key needed? |
 |---|---|---|
 | Player and team stats, schedule, consensus lines, injuries | [nflverse](https://github.com/nflverse/nflverse-data) | No |
 | Fresher spread and total | ESPN public scoreboard | No |
+| NBA box scores, schedule | [sportsdataverse](https://github.com/sportsdataverse/sportsdataverse-data) (ESPN data, updated daily) | No |
+| NBA lines, injury report, last night's box scores | ESPN public API | No |
 
 A GitHub Action rebuilds the data every 3 hours and republishes the site. Each time the page
 loads (or you press **Refresh**), it also asks ESPN for the latest lines. If ESPN is blocked on
@@ -39,6 +60,7 @@ with **Run workflow**.
 pip install -r requirements.txt
 python scripts/build_data.py          # writes site/data/data.json
 python scripts/backtest.py 2026       # writes site/data/backtest.json
+python scripts/nba_build.py           # writes site/data/nba.json and nba_backtest.json
 cd site && python -m http.server 8000 # open http://localhost:8000
 ```
 
@@ -47,4 +69,6 @@ cd site && python -m http.server 8000 # open http://localhost:8000
 - `scripts/build_data.py` downloads data and builds projections.
 - `scripts/model.py` holds the probability math (mirrored in `site/app.js`).
 - `scripts/backtest.py` replays past weeks to check the ranges and tunes their width.
-- `site/` is the web page (plain HTML, CSS, JavaScript; no build step).
+- `scripts/nba_build.py` downloads NBA data, builds projections, and tests the ranges on past games.
+- `site/` is the web pages (plain HTML, CSS, JavaScript; no build step): `index.html` + `app.js` for NFL,
+  `nba.html` + `nba.js` for NBA, `nav.js` for the dark/light toggle.

@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NBA Matchup Lab</title>
+  <meta name="description" content="Today's NBA games, betting lines, player stat trends, matchup strength, and projected ranges for points, rebounds, assists, threes, and other props.">
+  <script>try{document.documentElement.dataset.theme=localStorage.getItem("theme")||(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light")}catch(e){document.documentElement.dataset.theme="light"}</script>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <nav class="sport" aria-label="Sport"><a href="index.html">NFL</a><a href="nba.html" aria-current="page">NBA</a></nav>
+    <div class="brand">
+      <h1>NBA Matchup Lab</h1>
+      <span id="meta" class="muted"></span>
+    </div>
+    <nav id="weeks" class="weeks" aria-label="Game day"></nav>
+    <button id="refreshBtn" class="btn" type="button" title="Reload stats and pull the latest betting lines">Refresh</button>
+    <button id="slipBtn" class="slip-btn" type="button">Parlay slip <span id="slipCount">0</span></button>
+    <button id="themeBtn" class="theme-btn" type="button"></button>
+  </header>
+
+  <main>
+    <section id="games" class="games" aria-label="Games"></section>
+    <section id="game" class="game"></section>
+  </main>
+
+  <aside id="slip" class="drawer" aria-label="Parlay slip" hidden></aside>
+  <div id="modal" class="modal" hidden><div class="modal-card" role="dialog" aria-modal="true"></div></div>
+
+  <footer class="foot muted">
+    Data: <a href="https://github.com/sportsdataverse">sportsdataverse</a> box scores, live lines and injury report from ESPN.
+    Projections are estimates, not guarantees. <a href="#" id="howLink">How the model works</a>
+  </footer>
+  <script src="nav.js"></script>
+  <script src="nba.js"></script>
+</body>
+</html>

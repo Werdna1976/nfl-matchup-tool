@@ -31,6 +31,14 @@ jobs:
         run: |
           python scripts/build_data.py
           python scripts/backtest.py "$(python -c 'import datetime as d; t=d.date.today(); print(t.year if t.month >= 8 else t.year - 1)')"
+      - name: Build NBA data
+        # If the NBA download fails, keep the NBA numbers already on the live site so the NFL page still publishes.
+        run: |
+          python scripts/nba_build.py || {
+            echo "NBA build failed; reusing the published NBA data"
+            curl -sfL -o site/data/nba.json "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/data/nba.json" || true
+            curl -sfL -o site/data/nba_backtest.json "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/data/nba_backtest.json" || true
+          }
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
