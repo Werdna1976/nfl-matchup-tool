@@ -10,6 +10,7 @@ Run:  python scripts/nba_build.py                 (current season)
 """
 import argparse
 import datetime as dt
+import gzip
 import io
 import json
 import math
@@ -117,8 +118,23 @@ def load_schedule(season):
 
 # ---------------------------------------------------------------- ESPN (optional, live)
 
+ESPN_HOSTS = [ESPN, ESPN.replace("site.api.espn.com", "site.web.api.espn.com")]
+
+
 def espn_json(path, timeout=20):
-    return json.loads(fetch(f"{ESPN}/{path}", timeout))
+    """ESPN JSON, trying ESPN's second host if the first fails or answers with something other than JSON."""
+    err = None
+    for base in ESPN_HOSTS:
+        raw = b""
+        try:
+            raw = fetch(f"{base}/{path}", timeout)
+            if raw[:2] == b"\x1f\x8b":
+                raw = gzip.decompress(raw)
+            return json.loads(raw)
+        except Exception as e:
+            err = e
+            print(f"  {base}/{path}: {e}" + (f"; got {raw[:120]!r}" if raw else ""))
+    raise err
 
 
 def espn_box(gid):
@@ -181,9 +197,9 @@ def parse_odds(comp):
     return margin, float(odds["overUnder"]), (odds.get("provider") or {}).get("name", "ESPN"), ml("home"), ml("away")
 
 
-def espn_scoreboard(day):
+def espn_scoreboard(day, dated=True):
     """{gid: {...}} for one ET calendar day."""
-    j = espn_json(f"scoreboard?dates={day.strftime('%Y%m%d')}")
+    j = espn_json(f"scoreboard?dates={day.strftime('%Y%m%d')}&limit=100" if dated else "scoreboard")
     out = {}
     for ev in j.get("events", []):
         comp = ev["competitions"][0]
@@ -570,7 +586,11 @@ def build(today, run_backtest=True):
             sb_games.update(espn_scoreboard(day))
         except Exception as e:
             print(f"ESPN scoreboard {day} unavailable:", e)
-            break
+            if off == 0:   # the undated scoreboard is ESPN's "today" page; worth one more try
+                try:
+                    sb_games.update(espn_scoreboard(day, dated=False))
+                except Exception as e2:
+                    print("ESPN scoreboard (today) unavailable:", e2)
     have = set(box.gid)
     for gid, g in sb_games.items():
         if g["done"] and gid not in have and g["date"] <= today.isoformat():

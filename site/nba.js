@@ -188,6 +188,11 @@ async function getJson(url) {
   } finally { clearTimeout(t); }
 }
 
+// ESPN serves the same data from two hosts; if one fails here, try the other
+async function espnJson(path) {
+  try { return await getJson(`${ESPN}/${path}`); } catch (e) { return getJson(`${ESPN.replace("site.api", "site.web.api")}/${path}`); }
+}
+
 // "BOS -13.5" means Boston is favored by 13.5. Returned margin is positive when the home team is favored.
 function parseOdds(c) {
   const o = c?.odds?.[0];
@@ -203,7 +208,7 @@ function parseOdds(c) {
 }
 
 async function fetchEspnLines(day) {
-  const j = await getJson(`${ESPN}/scoreboard?dates=${day.replaceAll("-", "")}`);
+  const j = await espnJson(`scoreboard?dates=${day.replaceAll("-", "")}&limit=100`);
   const out = {};
   for (const ev of j.events || []) {
     const l = parseOdds(ev.competitions?.[0]);
@@ -214,7 +219,7 @@ async function fetchEspnLines(day) {
 
 async function refreshInjuries() {
   try {
-    const j = await getJson(`${ESPN}/injuries`);
+    const j = await espnJson("injuries");
     const byId = {}, byName = {};
     for (const team of j.injuries || []) for (const it of team.injuries || []) {
       const a = it.athlete || {};
