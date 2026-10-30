@@ -584,6 +584,17 @@ function adjustForInjuries() {
             (p, r) => { for (const k of RIDES[vol]) ROLES.scale(p.proj[g.id][k], r); });
         }
       }
+      // Targets should roughly match the starting QB's attempts (listed receivers see about 86%
+      // of them). Meet halfway: in last season's games that cut errors a little, going all
+      // the way made them worse.
+      const avail = roster.filter((p) => !ROLES.outWeight(p));
+      const qb = avail.filter((p) => p.pos === "QB").sort((a, b) => b.proj[g.id].att.mean - a.proj[g.id].att.mean)[0];
+      const rec = avail.filter((p) => p.pos !== "QB" && p.proj[g.id].tgt);
+      const S = rec.reduce((a, p) => a + p.proj[g.id].tgt.mean, 0);
+      if (qb && S > 0) {
+        const f = 0.5 + 0.5 * 0.86 * qb.proj[g.id].att.mean / S;
+        for (const p of rec) for (const k of RIDES.tgt) ROLES.scale(p.proj[g.id][k], f);
+      }
     }
   }
 }

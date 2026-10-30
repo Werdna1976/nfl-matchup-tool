@@ -80,6 +80,7 @@ def _norm_box(df):
         "home": df.home_away == "home",
         "fga": df.field_goals_attempted, "fta": df.free_throws_attempted, "oreb": df.offensive_rebounds,
         "fg3a": df.three_point_field_goals_attempted,
+        "starter": df.starter.fillna(False).astype(bool),
     })
     for k, col in BASE.items():
         out[k] = pd.to_numeric(df[col], errors="coerce")
@@ -97,7 +98,7 @@ def load_box(season):
         return _norm_box(pd.DataFrame(columns=["game_id", "game_date", "season", "season_type", "athlete_id",
                                                "athlete_display_name", "athlete_position_abbreviation",
                                                "athlete_headshot_href", "team_abbreviation",
-                                               "opponent_team_abbreviation", "home_away", "did_not_play",
+                                               "opponent_team_abbreviation", "home_away", "did_not_play", "starter",
                                                "field_goals_attempted", "free_throws_attempted",
                                                "offensive_rebounds", "three_point_field_goals_attempted",
                                                *BASE.values()]))
@@ -172,6 +173,7 @@ def espn_box(gid):
                  "fga": num("fieldGoalsMade-fieldGoalsAttempted", 1), "fta": num("freeThrowsMade-freeThrowsAttempted", 1),
                  "oreb": num("offensiveRebounds")}
             r["played"] = r["min"] > 0 and not a.get("didNotPlay", False)
+            r["starter"] = bool(a.get("starter", False))
             rows.append(r)
     return rows
 
@@ -405,6 +407,40 @@ def fit_priors(box):
     return out
 
 
+# How much last season counts, in games' worth of this season. Small on purpose: roles and
+# minutes change a lot between seasons, so a few games of this season outweigh it.
+K_MIN, K_MIN_SHIFT, K_RATE, K_RATE_SHIFT = 1.0, 0.5, 6.0, 2.0
+
+
+def role(cur, prev):
+    """Minutes when he plays, and how likely he is to start, from this season's games.
+
+    Minutes are estimated separately for games he starts and comes off the bench (each
+    recency-weighted), then mixed by how often he has started lately. Last season only fills
+    in early on, and barely at all once his minutes clearly differ from last year's.
+    """
+    n = len(cur)
+    m_prev = sum(g["min"] for g in prev[-20:]) / len(prev[-20:]) if prev else None
+    if not n:
+        return {"min": m_prev or 0.0, "st": (sum(g.get("starter", False) for g in prev[-10:]) / len(prev[-10:])) if prev else 0.0,
+                "ms": m_prev or 0.0, "mb": m_prev or 0.0, "shift": False, "now": None, "prev": m_prev}
+    m_all = ewma([g["min"] for g in cur], 5)
+    last = cur[-5:]
+    wts = list(range(1, len(last) + 1))
+    st = sum(w * bool(g.get("starter")) for w, g in zip(wts, last)) / sum(wts)
+    starts = [g["min"] for g in cur if g.get("starter")]
+    bench = [g["min"] for g in cur if not g.get("starter")]
+    fs = m_all + 0.35 * max(0.0, 32 - m_all)   # what a usual bench player gets when he starts
+    fb = m_all - 0.35 * max(0.0, m_all - 16)
+    ms = (len(starts) * ewma(starts, 4) + 3 * fs) / (len(starts) + 3) if starts else fs
+    mb = (len(bench) * ewma(bench, 4) + 3 * fb) / (len(bench) + 3) if bench else fb
+    m_role = st * ms + (1 - st) * mb
+    shift = m_prev is not None and n >= 3 and abs(m_role - m_prev) > max(4.0, 0.2 * m_prev)
+    k = K_MIN_SHIFT if shift else K_MIN
+    minutes = (n * m_role + k * m_prev) / (n + k) if m_prev is not None else m_role
+    return {"min": minutes, "st": st, "ms": ms, "mb": mb, "shift": shift, "now": m_role, "prev": m_prev}
+
+
 def project_player(cur, prev, f_opp, gs, priors, calib=None):
     """cur / prev: this season's and last season's played games (dicts, oldest first).
 
@@ -423,9 +459,7 @@ def project_player(cur, prev, f_opp, gs, priors, calib=None):
         return w * c + (1 - w) * p
 
     mins_c = [g["min"] for g in cur]
-    m_cur = ewma(mins_c, 5) if cur else None
-    m_prev = sum(g["min"] for g in prev[-20:]) / len(prev[-20:]) if prev else None
-    minutes = blend(m_cur, m_prev, 4) or 0.0
+    minutes = role(cur, prev)["min"]
     if abs(gs["margin"]) > 9 and minutes >= 26:   # likely blowout: starters sit late
         minutes *= max(0.93, 1 - 0.005 * (abs(gs["margin"]) - 9))
 
@@ -440,7 +474,9 @@ def project_player(cur, prev, f_opp, gs, priors, calib=None):
         pm = sum(g["min"] for g in prev)
         if prev and pm > 0:
             r_prev = sum(g[k] for g in prev) / pm
-        rate = blend(r_cur, r_prev, 8) or 0.0
+        # a clear change in how much he produces per minute (new role, new team) cuts last season out faster
+        shift = r_cur is not None and r_prev is not None and n >= 5 and abs(r_cur - r_prev) > 0.25 * max(r_prev, 0.05)
+        rate = blend(r_cur, r_prev, K_RATE_SHIFT if shift else K_RATE) or 0.0
         f = clip(factor[k], 0.85, 1.15)
         means[k], fs[k] = minutes * rate * f, f
     for k, parts in COMBOS.items():
@@ -472,9 +508,83 @@ def project_player(cur, prev, f_opp, gs, priors, calib=None):
     return out
 
 
+def play_rate(entries, tm, before, n=10):
+    """Share of the team's recent games he played, out of those he was dressed for.
+
+    entries: [(date, tm, played)] for every box-score row, including did-not-play ones.
+    Games he's missing from entirely (injured, inactive) don't count against him.
+    """
+    rows = [e for e in entries if e[1] == tm and e[0] < before][-n:]
+    if len(rows) < 3:
+        return 1.0
+    return sum(e[2] for e in rows) / len(rows)
+
+
+def roster_index(box):
+    """{pid: [(date, tm, played)]} for every box-score row, oldest first."""
+    b = box.sort_values(["date", "gid"])
+    return {pid: list(zip(g.date, g.tm, g.played)) for pid, g in b.groupby("pid")}
+
+
+TEAM_MIN = 240.0
+PROMOTE, STARTER_CUT, PROMOTE_W = True, 0.4, 0.5   # five players x 48 minutes; overtime adds a little now and then
+
+
+def fit_team_minutes(players, target=None):
+    """Make a team's expected minutes add up. players: [{min, st, ms, mb, pp}] for everyone
+    available; returns a multiplier for each player's minutes (and so his stats).
+
+    1. The five most likely starters start. A bench player moving into the lineup gets his
+       starter minutes; a regular starter pushed out gets his bench minutes.
+    2. Expected minutes (minutes when he plays x chance he plays) are scaled to the target.
+       Cuts fall mostly on the bench; additions go to whoever has room below 40.
+    """
+    n, target = len(players), target or TEAM_MIN
+    if not n:
+        return []
+    m = [p["min"] for p in players]
+    # bonus: the page nudges a same-position backup ahead when a starter is out
+    order = sorted(range(n), key=lambda i: (-(players[i]["st"] + players[i].get("bonus", 0)), -m[i]))
+    starters = set(order[:5])
+    for i, p in enumerate(players):
+        if not PROMOTE:
+            break
+        if i in starters and p["st"] < 0.5:
+            m[i] = max(m[i], PROMOTE_W * p["ms"] + (1 - PROMOTE_W) * m[i])
+        elif i not in starters and p["st"] >= 0.5:
+            m[i] = min(m[i], PROMOTE_W * p["mb"] + (1 - PROMOTE_W) * m[i])
+    pp = [p["pp"] for p in players]
+    for _ in range(4):
+        e = sum(mi * q for mi, q in zip(m, pp))
+        gap = target - e
+        if abs(gap) < 0.5:
+            break
+        if gap < 0:
+            w = [mi * q * (STARTER_CUT if i in starters else 1.0) for i, (mi, q) in enumerate(zip(m, pp))]
+        else:
+            w = [mi * q * max(0.0, 40 - mi) / 40 * p.get("aff", 1.0) for mi, q, p in zip(m, pp, players)]
+        W = sum(w)
+        if W <= 0:
+            break
+        m = [max(0.0, min(42.0, mi + gap * wi / W / max(q, 0.2))) for mi, wi, q in zip(m, w, pp)]
+    return [mi / p["min"] if p["min"] > 0 else 1.0 for mi, p in zip(m, players)]
+
+
+def rescale(proj, r):
+    """Scale minutes and every counting stat by r, keeping each one's shape."""
+    for d in proj.values():
+        d["mean"] = round(d["mean"] * r, 2)
+        if d["dist"] == "gamma":
+            d["sd"] = round(d["sd"] * r, 2)
+        elif d["dist"] == "negbin":
+            d["sd"] = round(max(d["sd"] * math.sqrt(r), math.sqrt(d["mean"]) * 1.0001), 2)
+        else:
+            d["sd"] = round(math.sqrt(d["mean"]), 2)
+
+
 def player_index(box):
     """{pid: [game dicts oldest first]} for played games."""
-    cols = ["gid", "date", "season", "tm", "opp", "home", *BASE]
+    cols = ["gid", "date", "season", "tm", "opp", "home", "starter", *BASE]
     p = box[box.played].sort_values(["date", "gid"])
     return {pid: g[cols].to_dict("records") for pid, g in p.groupby("pid")}
 
@@ -496,6 +606,10 @@ def eligible(team_dates, idx_cur, tm, before):
 
 # ---------------------------------------------------------------- backtest
 
+FIT_TEAM = True
+LAST_TEAM_SUMS = []
+
+
 def backtest(box_by_season, seasons, priors_by_season, every=3, min_day=14):
     """Replay past game days: project with only earlier games, then compare with what happened.
 
@@ -513,6 +627,7 @@ def backtest(box_by_season, seasons, priors_by_season, every=3, min_day=14):
         tg_all = team_games(box)
         days = sorted(box.date.unique())
         idx_all = player_index(box)
+        ros = roster_index(box)
         team_dates = {t: sorted(g.date.unique()) for t, g in box.groupby("tm")}
         games = box.drop_duplicates(["gid", "tm"])[["gid", "date", "tm", "opp", "home"]]
         for D in days[min_day::every]:
@@ -520,17 +635,30 @@ def backtest(box_by_season, seasons, priors_by_season, every=3, min_day=14):
             idx_cur = {pid: [g for g in gl if g["date"] < D] for pid, gl in idx_all.items()}
             idx_cur = {pid: gl for pid, gl in idx_cur.items() if gl}
             actual = {(r["pid"]): r for r in box[(box.date == D) & box.played].to_dict("records")}
+            dressed = set(box[box.date == D].pid)   # stands in for the pregame inactive list
             for g in games[(games.date == D) & games.home].itertuples():
                 if g.tm not in ctx["teams"] or g.opp not in ctx["teams"]:
                     continue
                 gm = game_model(g.tm, g.opp, ctx)
                 for tm, opp, is_home in ((g.tm, g.opp, True), (g.opp, g.tm, False)):
                     gs = game_script(tm, opp, ctx, gm, is_home)
+                    projs = {}
                     for pid in eligible(team_dates, idx_cur, tm, D):
+                        if pid not in dressed:
+                            continue
+                        projs[pid] = project_player(idx_cur[pid], idx_prev.get(pid, []), ctx["teams"][opp], gs, priors_by_season[S])
+                    if FIT_TEAM:
+                        pl = list(projs)
+                        info = [dict(role(idx_cur[pid], idx_prev.get(pid, [])), pp=play_rate(ros.get(pid, []), tm, D)) for pid in pl]
+                        for i, pid in enumerate(pl):
+                            info[i]["min"] = projs[pid]["min"]["mean"]
+                        for pid, r in zip(pl, fit_team_minutes(info)):
+                            rescale(projs[pid], r)
+                        LAST_TEAM_SUMS.append(sum(projs[pid]["min"]["mean"] * q["pp"] for pid, q in zip(pl, info)))
+                    for pid, proj in projs.items():
                         a = actual.get(pid)
                         if a is None:
                             continue
-                        proj = project_player(idx_cur[pid], idx_prev.get(pid, []), ctx["teams"][opp], gs, priors_by_season[S])
                         hist = idx_cur[pid]
                         for k, p in proj.items():
                             act = a[k] if k in a else sum(a[c] for c in COMBOS[k])
@@ -669,10 +797,11 @@ def build(today, run_backtest=True):
 
     idx_cur = player_index(box)
     idx_prev = player_index(prev_box)
+    ros = roster_index(box)
     team_dates = {t: sorted(g.date.unique()) for t, g in box.groupby("tm")}
     info = (pd.concat([prev_box, box]).sort_values("date").groupby("pid").last()[["name", "pos", "img", "tm"]])
 
-    games, used, proj = [], set(), {}
+    games, used, proj, roles = [], set(), {}, {}
     for gid, g in sorted(up.items(), key=lambda kv: (kv[1]["date"], kv[1]["t"], kv[0])):
         if g["date"] not in dates:
             continue
@@ -684,21 +813,38 @@ def build(today, run_backtest=True):
         gm = game_model(home, away, ctx, spread, total)
         game = {"id": gid, "date": g["date"], "t": g["t"], "home": home, "away": away, "spread": spread,
                 "total": total, "line_src": src, "home_ml": hml, "away_ml": aml, "model": gm, "script": {},
-                "players": {home: [], away: []}}
+                "players": {home: [], away: []}, "bench_min": {}}
         if gid in final:
             game["final"] = True
             game["home_score"], game["away_score"] = final[gid]
         for tm, opp, is_home in ((home, away, True), (away, home, False)):
             gs = game_script(tm, opp, ctx, gm, is_home)
             game["script"][tm] = {k: round(v, 3) for k, v in gs.items()}
+            # everyone who has played lately, with minutes fitted to the team's 240. The page
+            # refits after taking out whoever the injury report rules out.
+            team = {}
             for pid in eligible(team_dates, idx_cur, tm, g["date"]):
                 cur = [x for x in idx_cur[pid] if x["date"] < g["date"]]   # a finished game can't inform its own projection
                 p = project_player(cur, idx_prev.get(pid, []), ctx["teams"][opp], gs, priors, calib)
-                if p["min"]["mean"] < 8:
+                rl = role(cur, idx_prev.get(pid, []))
+                rl.update(min=p["min"]["mean"], pp=play_rate(ros.get(pid, []), tm, g["date"]))
+                team[pid] = (p, rl)
+            for (pid, (p, rl)), r in zip(team.items(), fit_team_minutes([rl for _, rl in team.values()])):
+                rescale(p, r)
+            bench = 0.0
+            for pid, (p, rl) in team.items():
+                if p["min"]["mean"] < 8:   # deep bench: left off the list, but their minutes count
+                    bench += p["min"]["mean"] * rl["pp"]
                     continue
                 proj.setdefault(pid, {})[gid] = p
+                roles.setdefault(pid, {})[gid] = {"st": round(rl["st"], 2), "ms": round(rl["ms"], 1), "mb": round(rl["mb"], 1),
+                                                  "pp": round(rl["pp"], 2)}
+                if rl["shift"] and abs(rl["now"] - rl["prev"]) >= 6:   # worth pointing out on the page
+                    roles[pid][gid]["was"] = round(rl["prev"], 1)
+                    roles[pid][gid]["now"] = round(rl["now"], 1)
                 game["players"][tm].append(pid)
                 used.add(pid)
+            game["bench_min"][tm] = round(bench, 1)
         games.append(game)
 
     players = {}
@@ -709,12 +855,14 @@ def build(today, run_backtest=True):
             for x in season_games:
                 row = {"d": x["date"], "opp": x["opp"], "tm": x["tm"], "h": int(bool(x["home"]))}
                 row.update({k: int(round(x[k])) for k in BASE})
+                if x.get("starter"):
+                    row["s"] = 1
                 if ly:
                     row["ly"] = 1
                 log.append(row)
         players[pid] = {"name": r["name"], "pos": r["pos"] if isinstance(r["pos"], str) else "",
                         "team": idx_cur[pid][-1]["tm"], "img": r["img"] if isinstance(r["img"], str) else None,
-                        "log": log[-25:], "proj": proj[pid]}
+                        "log": log[-25:], "proj": proj[pid], "role": roles[pid]}
         inj = injuries.get(pid) or injuries.get(str(r["name"]).lower())
         if inj and inj.get("status"):
             players[pid]["inj"] = inj
