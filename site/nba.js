@@ -487,7 +487,7 @@ function matchupSide(g, tm, opp) {
 
 function playerRows(g, tm) {
   return (g.players[tm] || []).map((pid) => ({ pid, ...DATA.players[pid] }))
-    .sort((a, b) => (b.proj[g.id]?.min.mean || 0) - (a.proj[g.id]?.min.mean || 0));
+    .sort((a, b) => (ROLES.outWeight(a) >= 1) - (ROLES.outWeight(b) >= 1) || (b.proj[g.id]?.min.mean || 0) - (a.proj[g.id]?.min.mean || 0));
 }
 function injBadge(p) {
   const s = p.inj?.status;
@@ -500,11 +500,21 @@ const isOut = (p) => /^out$/i.test(p.inj?.status || "");
 const rangeTxt = (d) => `${Math.round(quantile(0.1, d))}–${Math.round(quantile(0.9, d))}`;
 const thisSeason = (p) => p.log.filter((r) => !r.ly);
 
+// Projected starter, and players whose minutes jumped or fell from last season
+function roleTags(p, g) {
+  const me = DATA.players[p.pid], r = me.role?.[g.id];
+  const tags = [];
+  if (g.starters?.[me.team]?.has(me)) tags.push(`<span class="role-tag st" title="Projected starter (started ${Math.round((r?.st || 0) * 100)}% of recent games, weighted to the latest)">Starter</span>`);
+  if (r?.was != null) tags.push(`<span class="role-tag shift" title="About ${Math.round(r.now)} minutes a game this season vs ${Math.round(r.was)} last season, so last season barely counts">${r.now > r.was ? "Bigger" : "Smaller"} role</span>`);
+  if (r && r.pp < 0.75) tags.push(`<span class="role-tag dnp" title="Sat out (coach's decision) in ${Math.round((1 - r.pp) * 100)}% of recent games he was available for. Projections assume he plays.">Sits ${Math.round((1 - r.pp) * 100)}%</span>`);
+  return tags.join("");
+}
+
 function renderPlayers(g) {
   const el = $("#players");
   const ps = playerRows(g, state.team);
   el.innerHTML = `
-    <div class="panel-head"><h2>Player projections this game</h2><span class="muted small">Bold = projected average (▲▼ = changed for a teammate who is out; hover for details). Small text = 80% range. Tap a player for game logs and lines.</span></div>
+    <div class="panel-head"><h2>Player projections this game</h2><span class="muted small">Bold = projected average if he plays (▲▼ = changed for a teammate who is out; hover for details). Small text = 80% range. Minutes add up to the team's 240. Tap a player for game logs and lines.</span></div>
     <div class="tabs">
       ${[g.away, g.home].map((t) => `<button class="chip" data-team="${t}" aria-pressed="${t === state.team}">${esc(DATA.team_names[t])}</button>`).join("")}
     </div>
@@ -512,7 +522,7 @@ function renderPlayers(g) {
       <thead><tr><th>Player</th>${TABLE_KEYS.map((k) => `<th>${STATS[k].short}</th>`).join("")}<th title="Chance of 10+ in two of points, rebounds, assists">Dbl-dbl</th><th>Games</th></tr></thead>
       <tbody>${ps.map((p) => {
         const pr = p.proj[g.id], cur = thisSeason(p), last5 = p.log.slice(-5);
-        return `<tr class="click" data-pid="${p.pid}"><td><span class="pname">${esc(p.name)}</span><span class="pos-tag">${esc(p.pos)}</span>${injBadge(p)}</td>
+        return `<tr class="click" data-pid="${p.pid}"><td><span class="pname">${esc(p.name)}</span><span class="pos-tag">${esc(p.pos)}</span>${roleTags(p, g)}${injBadge(p)}</td>
           ${TABLE_KEYS.map((k) => {
             const d = pr[k];
             return `<td title="This season avg ${fmt(avg(cur.map((r) => val(r, k))), 1)} · last 5 avg ${fmt(avg(last5.map((r) => val(r, k))), 1)}"><b>${fmt(d.mean, STATS[k].dec)}</b>${ROLES.mark(p, g.id, k, STATS[k].dec)}<span class="rng">${rangeTxt(d)}</span></td>`;
@@ -528,56 +538,91 @@ function renderPlayers(g) {
 const RATE_KEYS = ["pts", "reb", "ast", "fg3", "stl", "blk", "tov"];
 const COMBO_KEYS = ALL_KEYS.filter((k) => STATS[k].parts);
 const posGroup = (pos) => (/C/.test(pos || "") ? 2 : /F/.test(pos || "") ? 1 : 0);   // guard, forward, center
-const AFFINITY = [3, 1.5, 0.5];   // same position group, next one over, guard <-> center
 
-// When a player is out, his minutes go mostly to teammates at his position who have room to
-// play more (a 36-minute starter can't absorb much). Whatever scoring, rebounding, and passing
-// those extra minutes don't cover gets spread across the rest (bigger roles for everyone),
-// less 10% because teams usually play a bit worse without a regular. Then it's blended with
-// how each teammate really did in past games without him.
+// Mirrors fit_team_minutes() in scripts/nba_build.py: the five likeliest starters start (a
+// backup moving into the lineup gets halfway to his starter minutes), then everyone's expected
+// minutes are scaled to the team's total. Cuts fall mostly on the bench; additions go to
+// whoever has room below 40, more to players at an injured player's position (aff).
+const PROMOTE_W = 0.5, STARTER_CUT = 0.4;
+function fitTeamMinutes(players, target) {
+  const n = players.length;
+  if (!n) return { mult: [], starters: new Set() };
+  let m = players.map((p) => p.min);
+  const order = [...players.keys()].sort((a, b) => (players[b].st + (players[b].bonus || 0)) - (players[a].st + (players[a].bonus || 0)) || m[b] - m[a]);
+  const starters = new Set(order.slice(0, 5));
+  players.forEach((p, i) => {
+    if (starters.has(i) && p.st < 0.5) m[i] = Math.max(m[i], PROMOTE_W * p.ms + (1 - PROMOTE_W) * m[i]);
+    else if (!starters.has(i) && p.st >= 0.5) m[i] = Math.min(m[i], PROMOTE_W * p.mb + (1 - PROMOTE_W) * m[i]);
+  });
+  const pp = players.map((p) => p.pp);
+  for (let it = 0; it < 4; it++) {
+    const gap = target - m.reduce((a, mi, i) => a + mi * pp[i], 0);
+    if (Math.abs(gap) < 0.5) break;
+    const w = m.map((mi, i) => gap < 0 ? mi * pp[i] * (starters.has(i) ? STARTER_CUT : 1) : mi * pp[i] * Math.max(0, 40 - mi) / 40 * (players[i].aff || 1));
+    const W = w.reduce((a, b) => a + b, 0);
+    if (W <= 0) break;
+    m = m.map((mi, i) => Math.max(0, Math.min(42, mi + gap * w[i] / W / Math.max(pp[i], 0.2))));
+  }
+  return { mult: m.map((mi, i) => (players[i].min > 0 ? mi / players[i].min : 1)), starters };
+}
+
+// The data file's minutes already add up with everyone available. Here the injury report
+// takes players out (Doubtful ones play a quarter of the time), the lineup and minutes are
+// refit, and every stat moves with the minutes. Scoring, rebounding, and passing the extra
+// minutes don't cover gets spread across the rest (bigger roles for everyone), less 10%
+// because teams usually play a bit worse without a regular. Then it's blended with how each
+// teammate really did in past games without him.
 function adjustForInjuries() {
   ROLES.reset(DATA);
   for (const g of DATA.games) {
+    g.starters = {};
     for (const tm of [g.home, g.away]) {
       const roster = (g.players[tm] || []).map((pid) => DATA.players[pid]);
-      for (const m of roster) {
-        const w = ROLES.outWeight(m);
-        if (!w) continue;
-        const share = w * ROLES.share(m, tm, roster, "d", g.date, 5);
+      const outs = roster.filter((p) => ROLES.outWeight(p));
+      const avail = roster.filter((p) => ROLES.outWeight(p) < 1);
+      const before = new Map(roster.map((p) => [p, p.proj[g.id].pts.mean]));
+      // a starter who is out opens a spot, most likely for a backup at his position
+      const gone = outs.filter((m) => ROLES.outWeight(m) === 1 && (m.role?.[g.id]?.st || 0) >= 0.5);
+      const info = avail.map((p) => {
+        const r = p.role?.[g.id] || { st: 0, ms: p.proj[g.id].min.mean, mb: p.proj[g.id].min.mean, pp: 1 };
+        const near = outs.some((m) => posGroup(m.pos) === posGroup(p.pos));
+        return { ...r, min: p.proj[g.id].min.mean, pp: r.pp * (ROLES.outWeight(p) ? 0.25 : 1),
+                 bonus: gone.some((m) => posGroup(m.pos) === posGroup(p.pos)) ? 0.3 : 0, aff: near ? 2 : 1 };
+      });
+      const fit = fitTeamMinutes(info, 240 - (g.bench_min?.[tm] || 0));
+      g.starters[tm] = new Set([...fit.starters].map((i) => avail[i]));
+      const added = new Map();
+      avail.forEach((p, i) => {
+        const d = p.proj[g.id], r = fit.mult[i];
+        added.set(p, d.min.mean * (r - 1));
+        if (Math.abs(r - 1) < 1e-3) return;
+        for (const k of ["min", ...RATE_KEYS]) ROLES.scale(d[k], r);
+        if (outs.length && r > 1.02) for (const m of outs) ROLES.because(p, g.id, m);
+      });
+      const mates = avail.filter((p) => !ROLES.outWeight(p));
+      for (const m of outs) {
+        const share = ROLES.outWeight(m) * ROLES.share(m, tm, roster, "d", g.date, 5);
         const mp = m.base[g.id];
         if (share < 0.2 || mp.min.mean < 10) continue;
-        const mates = roster.filter((p) => p !== m && !ROLES.outWeight(p));
-        const before = mates.map((p) => p.proj[g.id].pts.mean);
-        const wt = mates.map((p) => {
-          const mn = p.proj[g.id].min.mean;
-          return mn * AFFINITY[Math.abs(posGroup(p.pos) - posGroup(m.pos))] * Math.min(1, Math.max(0, 40 - mn) / 20);
-        });
-        const W = wt.reduce((a, b) => a + b, 0);
-        if (!W) continue;
-        const vac = share * mp.min.mean;
-        const add = mates.map((p, i) => Math.min(vac * wt[i] / W, Math.max(0, 40 - p.proj[g.id].min.mean)));
-        // what the extra minutes cover at each teammate's own per-minute rates
-        const covered = Object.fromEntries(RATE_KEYS.map((k) => [k, mates.reduce((a, p, i) => {
-          const d = p.proj[g.id]; return a + (d.min.mean > 0 ? add[i] * d[k].mean / d.min.mean : 0);
-        }, 0)]));
-        mates.forEach((p, i) => {
-          const d = p.proj[g.id], r = (d.min.mean + add[i]) / d.min.mean;
-          if (add[i] > 0.05) { for (const k of ["min", ...RATE_KEYS]) ROLES.scale(d[k], r); ROLES.because(p, g.id, m); }
-        });
+        // what the added minutes already cover at each teammate's own per-minute rates
         for (const k of RATE_KEYS) {
-          const gap = share * mp[k].mean * 0.9 - covered[k];
+          const covered = mates.reduce((a, p) => {
+            const b = p.base[g.id]; return a + (b.min.mean > 0 ? Math.max(0, added.get(p)) * b[k].mean / b.min.mean : 0);
+          }, 0) / outs.length;
+          const gap = share * mp[k].mean * 0.9 - covered;
           const pool = mates.reduce((a, p) => a + p.proj[g.id][k].mean, 0);
           if (gap > 0 && pool > 0) for (const p of mates) { ROLES.scale(p.proj[g.id][k], 1 + gap / pool); ROLES.because(p, g.id, m); }
         }
         // real games without him
-        mates.forEach((p, i) => {
-          const d = p.proj[g.id], rm = d.pts.mean / Math.max(before[i], 0.1);
+        for (const p of mates) {
+          const d = p.proj[g.id], rm = d.pts.mean / Math.max(before.get(p), 0.1);
           const r = ROLES.blend(p, m, (x) => x.pts, "d", rm);
           if (Math.abs(r - rm) > 1e-6) for (const k of RATE_KEYS) ROLES.scale(d[k], Math.max(0.6, r / rm));
-        });
-        ROLES.cap(mates, before, share * mp.pts.mean, (p) => p.proj[g.id].pts.mean,
-          (p, r) => { for (const k of RATE_KEYS) ROLES.scale(p.proj[g.id][k], r); });
+        }
       }
+      const lost = outs.reduce((a, m) => a + ROLES.outWeight(m) * ROLES.share(m, tm, roster, "d", g.date, 5) * m.base[g.id].pts.mean, 0);
+      if (outs.length) ROLES.cap(mates, mates.map((p) => before.get(p)), lost, (p) => p.proj[g.id].pts.mean,
+        (p, r) => { for (const k of RATE_KEYS) ROLES.scale(p.proj[g.id][k], r); });
       // combined props follow their parts
       for (const p of roster) {
         const d = p.proj[g.id], b = p.base[g.id];
@@ -982,12 +1027,13 @@ function openHow() {
   card.innerHTML = `
     <div class="modal-head"><h2>How the NBA model works</h2><button class="x" aria-label="Close">×</button></div>
     <div class="panel">
-      <p><b>Minutes first.</b> Almost every NBA stat follows playing time, so the model projects minutes (recent games count more), then multiplies by what the player produces per minute.</p>
-      <p><b>Early season.</b> With only a few games played, per-minute rates and minutes lean on the end of last season, and shift to this season's numbers as games pile up (about even after eight games).</p>
+      <p><b>Minutes first.</b> Almost every NBA stat follows playing time, so the model projects minutes, then multiplies by what the player produces per minute. Minutes are estimated separately for games a player starts and comes off the bench (recent games count more), then mixed by how often he has started lately.</p>
+      <p><b>Lineups that add up.</b> The five likeliest starters (from recent starts) are penciled in, and everyone's expected minutes are scaled so the team totals 240. Expected means minutes when he plays times how often he plays: a player who sits by coach's decision a third of the time counts for two thirds. Players ruled out are removed first, and a backup at the same position gets first shot at an open starting spot.</p>
+      <p><b>This season first.</b> Last season counts as only one game's worth of minutes (half a game once his minutes clearly differ from last year's, marked "Bigger role" or "Smaller role") and six games' worth for per-minute production, which is steadier from year to year. On last season's games, these changes cut the average minutes miss from 5.0 to 4.6 in the first month and from 5.2 to 5.0 after that.</p>
       <p><b>Pace and matchup.</b> A fast game means more possessions and more stats for everyone. Rebounds, assists, and threes are scaled by how many the opponent allows per 100 possessions compared with the league. Points follow the team's implied score from the betting spread and total. Big favorites' starters lose a few minutes to expected blowouts.</p>
       <p><b>Ranges.</b> Each player's own game-to-game swing, blended with the typical swing for players with similar averages, then tuned until past 80% ranges really did catch about 80% of results. Rebounds, assists, threes, steals, blocks, and turnovers use count odds (negative binomial); points and combos use a smooth curve. Totals and spreads use the market line with an 18-point (total) and 12.5-point (margin) typical miss, nudged 20% toward a pace-and-efficiency model.</p>
       <p><b>Double-doubles.</b> Points, rebounds, and assists are simulated together, since a big-minutes night lifts all three.</p>
-      <p><b>Teammates who are out.</b> When a regular is listed Out (or Doubtful, counted at 75%), his minutes go mostly to teammates at his position who have room to play more, and the scoring, rebounding, and passing those minutes don't cover is spread across the rest. Where a teammate has played games without him, those real numbers are blended in. Changed numbers carry a ▲ or ▼.</p>
+      <p><b>Teammates who are out.</b> When a regular is listed Out (or Doubtful, counted at 75%), the lineup and minutes are refit without him, with more of his minutes going to his position, and the scoring, rebounding, and passing those minutes don't cover is spread across the rest. Where a teammate has played games without him, those real numbers are blended in. Changed numbers carry a ▲ or ▼.</p>
       <p><b>What it doesn't know.</b> Late scratches until the page refreshes, minutes limits, and coaching choices. Check the injury report close to tip-off.</p>
       <p><b>Using it for alt lines.</b> If the model says 80% and Polymarket charges 70¢, that's a possible edge. If it charges 85¢, it isn't. Multiplying many 80% legs drops fast: five of them is about 33%.</p>
     </div>
