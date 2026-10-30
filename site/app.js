@@ -484,6 +484,7 @@ function renderPlayers(g) {
       <tbody>${ps.map((p) => {
         const pr = p.proj[g.id];
         const last = p.log.slice(-3);
+        if (ROLES.outWeight(p) >= 1) return `<tr class="click" data-pid="${p.pid}"><td><span class="pname">${esc(p.name)}</span>${injBadge(p)}</td>${ROLES.outRow(keys.length + 2)}</tr>`;
         return `<tr class="click" data-pid="${p.pid}"><td><span class="pname">${esc(p.name)}</span>${injBadge(p)}</td>
           ${keys.map((k) => {
             const d = pr[k];
@@ -595,6 +596,7 @@ function adjustForInjuries() {
         const f = 0.5 + 0.5 * 0.86 * qb.proj[g.id].att.mean / S;
         for (const p of rec) for (const k of RIDES.tgt) ROLES.scale(p.proj[g.id][k], f);
       }
+      for (const p of roster) if (ROLES.outWeight(p) >= 1) ROLES.zeroOut(p, g.id);
     }
   }
 }
@@ -628,7 +630,7 @@ function playerNotes(p, g) {
     if (m.pos === "QB" && p.pos !== "QB") { out.push({ kind: "bad", text: `QB ${m.name} is out: backup throwing to him` }); continue; }
     const catcher = (x) => x === "WR" || x === "TE";
     const share = p.pos === "RB" && m.pos === "RB" ? "car" : catcher(p.pos) && catcher(m.pos) ? "tgt" : null;
-    if (!share || volume(m, g) < 4) continue;
+    if (!share || volume({ proj: m.base || m.proj }, g) < 4) continue;
     const sp = NOTES.without(p, m, (r) => r[share], "w");
     if (sp && Math.abs(sp.without - sp.with) >= 1.5) {
       out.push({ kind: sp.without > sp.with ? "good" : "bad", text: `Without ${m.name} (out): ${fmt(sp.without, 1)} ${STATS[share].short.toLowerCase()} a game in ${sp.n} vs ${fmt(sp.with, 1)} with him` });

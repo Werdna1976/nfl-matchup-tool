@@ -525,6 +525,7 @@ function renderPlayers(g) {
       <thead><tr><th>Player</th>${TABLE_KEYS.map((k) => `<th>${STATS[k].short}</th>`).join("")}<th title="Chance of 10+ in two of points, rebounds, assists">Dbl-dbl</th><th>Games</th></tr></thead>
       <tbody>${ps.map((p) => {
         const pr = p.proj[g.id], cur = thisSeason(p), last5 = p.log.slice(-5);
+        if (ROLES.outWeight(p) >= 1) return `<tr class="click" data-pid="${p.pid}"><td><span class="pname">${esc(p.name)}</span><span class="pos-tag">${esc(p.pos)}</span>${injBadge(p)}</td>${ROLES.outRow(TABLE_KEYS.length + 2)}</tr>`;
         return `<tr class="click" data-pid="${p.pid}"><td><span class="pname">${esc(p.name)}</span><span class="pos-tag">${esc(p.pos)}</span>${roleTags(p, g)}${injBadge(p)}</td>
           ${TABLE_KEYS.map((k) => {
             const d = pr[k];
@@ -638,6 +639,9 @@ function adjustForInjuries() {
       }
     }
   }
+  for (const g of DATA.games) for (const tm of [g.home, g.away]) {
+    for (const pid of g.players[tm] || []) if (ROLES.outWeight(DATA.players[pid]) >= 1) ROLES.zeroOut(DATA.players[pid], g.id);
+  }
   DD_CACHE.clear();
 }
 
@@ -702,7 +706,7 @@ function playerNotes(p, g) {
   // teammates ruled out: show how this player did in past games without them
   for (const pid of g.players[p.team] || []) {
     const m = DATA.players[pid];
-    if (m === p || !isOut(m) || (m.proj[g.id]?.min.mean || 0) < 20) continue;
+    if (m === p || !isOut(m) || ((m.base || m.proj)[g.id]?.min.mean || 0) < 20) continue;
     const sp = NOTES.without(p, m, (r) => r.pts, "d");
     if (sp && Math.abs(sp.without - sp.with) >= 2) {
       out.push({ kind: sp.without > sp.with ? "good" : "bad", text: `Without ${m.name} (out): ${fmt(sp.without, 1)} pts in ${sp.n} games vs ${fmt(sp.with, 1)} with him` });
