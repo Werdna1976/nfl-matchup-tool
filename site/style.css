@@ -197,3 +197,14 @@ table.ladder td, table.ladder th { padding: 5px 8px; }
 .note-chip.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, transparent); }
 .note-chip.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
 @media (max-width: 600px) { .note-row { grid-template-columns: minmax(0, 1fr); } }
+
+/* finished and in-progress games */
+.badge { font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; padding: 1px 7px; border-radius: 999px; white-space: nowrap; align-self: center; }
+.badge.final { background: var(--text); color: var(--panel); }
+.badge.live { background: var(--bad); color: #fff; }
+.gcard.post { background: var(--panel-2); }
+.gcard.post .teams { font-weight: 500; color: var(--muted); }
+.gcard .teams .win { color: var(--text); font-weight: 700; }
+.gcard .score { font-variant-numeric: tabular-nums; }
+.scoreline .mid .badge { display: inline-block; margin: 4px 0 2px; }
+.gcard.post .teams, .gcard.in .teams, .scoreline .mid .pts { white-space: nowrap; }

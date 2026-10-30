@@ -197,6 +197,13 @@ def parse_odds(comp):
     return margin, float(odds["overUnder"]), (odds.get("provider") or {}).get("name", "ESPN"), ml("home"), ml("away")
 
 
+def _int(v):
+    try:
+        return int(float(v))
+    except (TypeError, ValueError):
+        return None
+
+
 def espn_scoreboard(day, dated=True):
     """{gid: {...}} for one ET calendar day."""
     j = espn_json(f"scoreboard?dates={day.strftime('%Y%m%d')}&limit=100" if dated else "scoreboard")
@@ -204,9 +211,11 @@ def espn_scoreboard(day, dated=True):
     for ev in j.get("events", []):
         comp = ev["competitions"][0]
         teams = {c["homeAway"]: c["team"]["abbreviation"] for c in comp["competitors"]}
+        score = {c["homeAway"]: _int(c.get("score")) for c in comp["competitors"]}
         out[str(ev["id"])] = {"done": bool(comp.get("status", ev.get("status", {})).get("type", {}).get("completed")),
                               "home": teams["home"], "away": teams["away"], "t": comp.get("date") or ev.get("date"),
-                              "date": day.isoformat(), "odds": parse_odds(comp)}
+                              "date": day.isoformat(), "odds": parse_odds(comp),
+                              "home_score": score.get("home"), "away_score": score.get("away")}
     return out
 
 
@@ -611,13 +620,24 @@ def build(today, run_backtest=True):
         print("ESPN injuries unavailable:", e)
         injuries = {}
 
-    # upcoming games: schedule plus anything ESPN knows about that the schedule doesn't
-    done = set(box.gid)
-    up = sched[(~sched.gid.isin(done)) & (~sched.done) & (sched.date >= today.isoformat())]
+    # today's and later games: schedule plus anything ESPN knows about that the schedule doesn't.
+    # Games already played today stay on the list, marked final with their score.
+    played = set(box.gid)
+    up = sched[sched.date >= today.isoformat()]
     up = {r.gid: {"date": r.date, "t": r.t, "home": r.home, "away": r.away} for r in up.itertuples()}
     for gid, g in sb_games.items():
-        if not g["done"] and gid not in done and g["date"] >= today.isoformat():
+        if g["date"] >= today.isoformat():
             up.setdefault(gid, {"date": g["date"], "t": g["t"], "home": g["home"], "away": g["away"]})
+    # final scores: ESPN's scoreboard, else team totals from the box scores
+    pts = box.groupby(["gid", "tm"]).pts.sum()
+    final = {}
+    for gid in up:
+        sb = sb_games.get(gid, {})
+        if sb.get("done") and sb.get("home_score") is not None:
+            final[gid] = (sb["home_score"], sb["away_score"])
+        elif gid in played:
+            g = up[gid]
+            final[gid] = (int(pts.get((gid, g["home"]), 0)), int(pts.get((gid, g["away"]), 0)))
     up = {k: v for k, v in up.items() if v["home"] in TEAM_NAMES and v["away"] in TEAM_NAMES}
     dates = sorted({g["date"] for g in up.values()})[:3]
 
@@ -665,11 +685,15 @@ def build(today, run_backtest=True):
         game = {"id": gid, "date": g["date"], "t": g["t"], "home": home, "away": away, "spread": spread,
                 "total": total, "line_src": src, "home_ml": hml, "away_ml": aml, "model": gm, "script": {},
                 "players": {home: [], away: []}}
+        if gid in final:
+            game["final"] = True
+            game["home_score"], game["away_score"] = final[gid]
         for tm, opp, is_home in ((home, away, True), (away, home, False)):
             gs = game_script(tm, opp, ctx, gm, is_home)
             game["script"][tm] = {k: round(v, 3) for k, v in gs.items()}
             for pid in eligible(team_dates, idx_cur, tm, g["date"]):
-                p = project_player(idx_cur[pid], idx_prev.get(pid, []), ctx["teams"][opp], gs, priors, calib)
+                cur = [x for x in idx_cur[pid] if x["date"] < g["date"]]   # a finished game can't inform its own projection
+                p = project_player(cur, idx_prev.get(pid, []), ctx["teams"][opp], gs, priors, calib)
                 if p["min"]["mean"] < 8:
                     continue
                 proj.setdefault(pid, {})[gid] = p
