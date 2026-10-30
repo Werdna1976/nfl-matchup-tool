@@ -171,14 +171,17 @@ async function fetchEspnLines(week) {
     const r = await fetch(url, { signal: ctl.signal, cache: "no-store" });
     if (!r.ok) throw new Error(r.status);
     const j = await r.json();
-    const out = {};
+    const out = {}, scores = {};
     for (const ev of j.events || []) {
-      const c = ev.competitions?.[0]; const o = c?.odds?.[0];
-      if (!o || o.spread == null || o.overUnder == null) continue;
+      const c = ev.competitions?.[0]; if (!c) continue;
       const side = {}; for (const t of c.competitors) side[t.homeAway] = ESPN_TEAM[t.team.abbreviation] || t.team.abbreviation;
-      out[`${side.away}@${side.home}`] = { spread: -Number(o.spread), total: Number(o.overUnder), src: o.provider?.name || "ESPN" };
+      const key = `${side.away}@${side.home}`;
+      scores[key] = RESULT.fromEspn(ev);
+      const o = c.odds?.[0];
+      if (!o || o.spread == null || o.overUnder == null) continue;
+      out[key] = { spread: -Number(o.spread), total: Number(o.overUnder), src: o.provider?.name || "ESPN" };
     }
-    return out;
+    return { lines: out, scores };
   } finally { clearTimeout(t); }
 }
 
@@ -187,10 +190,11 @@ async function refreshLines(manual) {
   const fileTime = new Date(DATA.updated).getTime();
   let saved = {};
   try { saved = JSON.parse(localStorage.getItem(LINES_KEY) || "{}"); } catch (e) { saved = {}; }
-  let live = 0, ok = false;
+  let live = 0, ok = false, scores = {};
   try {
     for (const w of DATA.weeks) {
-      const lines = await fetchEspnLines(w);
+      const { lines, scores: sc } = await fetchEspnLines(w);
+      Object.assign(scores, sc);
       const now = Date.now();
       for (const [key, l] of Object.entries(lines)) { saved[key] = { ...l, t: now }; live++; }
     }
@@ -199,7 +203,8 @@ async function refreshLines(manual) {
   } catch (e) { ok = false; }
   for (const g of DATA.games) {
     const l = saved[`${g.away}@${g.home}`];
-    if (l && l.t > fileTime) applyLine(g, l.spread, l.total, `${l.src} (live)`, l.t);
+    if (l && l.t > fileTime && RESULT.state(g) !== "post") applyLine(g, l.spread, l.total, `${l.src} (live)`, l.t);
+    if (scores[`${g.away}@${g.home}`]) g.live = scores[`${g.away}@${g.home}`];
   }
   LINE_STATUS = ok
     ? `Lines live from ESPN as of ${new Date().toLocaleTimeString()}`
@@ -299,11 +304,12 @@ function renderWeeks() {
 
 function renderGames() {
   const games = DATA.games.filter((g) => g.week === state.week);
-  if (!games.find((g) => g.id === state.gameId)) state.gameId = games[0]?.id;
+  // open on the first game that isn't over yet
+  if (!games.find((g) => g.id === state.gameId)) state.gameId = (games.find((g) => RESULT.state(g) !== "post") || games[0])?.id;
   $("#games").innerHTML = games.map((g) => `
-    <button type="button" class="gcard" data-id="${g.id}" aria-current="${g.id === state.gameId}">
-      <div class="row"><span class="teams">${g.away} @ ${g.home}</span><span class="when">${esc(kickoff(g))}</span></div>
-      <div class="lines">${esc(spreadText(g))} · O/U ${g.total ?? "–"}</div>
+    <button type="button" class="gcard ${RESULT.state(g)}" data-id="${g.id}" aria-current="${g.id === state.gameId}">
+      <div class="row"><span class="teams">${RESULT.teams(g)}</span>${RESULT.badge(g) || `<span class="when">${esc(kickoff(g))}</span>`}</div>
+      <div class="lines">${RESULT.state(g) === "post" ? esc(RESULT.settled(g)) : `${esc(spreadText(g))} · O/U ${g.total ?? "–"}`}</div>
     </button>`).join("") || `<div class="empty">No games this week.</div>`;
   $("#games").querySelectorAll(".gcard").forEach((b) => b.onclick = () => { state.gameId = b.dataset.id; state.team = null; renderGames(); });
   setHash();
@@ -323,7 +329,7 @@ function renderGame() {
     <div class="panel">
       <div class="scoreline">
         <div class="team"><img src="${logo(g.away)}" alt=""><div><div class="name">${esc(N[g.away])}</div><div class="muted small">Away</div></div></div>
-        <div class="mid"><div class="pts">${fmt(g.model.away_pts, 1)} – ${fmt(g.model.home_pts, 1)}</div>projected score</div>
+        <div class="mid">${RESULT.mid(g, `${fmt(g.model.away_pts, 1)} – ${fmt(g.model.home_pts, 1)}`)}</div>
         <div class="team right"><div><div class="name">${esc(N[g.home])}</div><div class="muted small">Home</div></div><img src="${logo(g.home)}" alt=""></div>
       </div>
       <div class="kv">

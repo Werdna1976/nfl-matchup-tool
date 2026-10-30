@@ -422,6 +422,8 @@ def build(season):
                 "model": gm, "script": {},
                 "players": {home: [], away: []},
             }
+            if not pd.isna(r.home_score) and not pd.isna(r.away_score):
+                game.update(final=True, home_score=int(r.home_score), away_score=int(r.away_score))
             for tm, opp, sign in ((home, away, 1), (away, home, -1)):
                 margin = sign * gm["margin"]["mean"]
                 implied = gm["home_pts"] if sign == 1 else gm["away_pts"]
@@ -430,7 +432,7 @@ def build(season):
                 for pid in eligible_players(stats, tm, week):
                     if players[pid]["team"] != tm:
                         continue
-                    pg = stats[(stats.player_id == pid)].sort_values("week")
+                    pg = stats[(stats.player_id == pid) & (stats.week < w)].sort_values("week")
                     players[pid]["proj"][r.game_id] = project_player(pg, players[pid]["pos"], opp, teams, lg, gs, cvs, rates, calib)
                     game["players"][tm].append(pid)
             games.append(game)

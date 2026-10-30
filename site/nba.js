@@ -209,12 +209,13 @@ function parseOdds(c) {
 
 async function fetchEspnLines(day) {
   const j = await espnJson(`scoreboard?dates=${day.replaceAll("-", "")}&limit=100`);
-  const out = {};
+  const out = {}, scores = {};
   for (const ev of j.events || []) {
+    scores[String(ev.id)] = RESULT.fromEspn(ev);
     const l = parseOdds(ev.competitions?.[0]);
     if (l) out[String(ev.id)] = l;
   }
-  return out;
+  return { lines: out, scores };
 }
 
 let NEWS_STATUS = "";
@@ -236,10 +237,11 @@ async function refreshLines() {
   const fileTime = new Date(DATA.updated).getTime();
   let saved = {};
   try { saved = JSON.parse(localStorage.getItem(LINES_KEY) || "{}"); } catch (e) { saved = {}; }
-  let live = 0, ok = false;
+  let live = 0, ok = false, scores = {};
   try {
     for (const d of DATA.dates) {
-      const lines = await fetchEspnLines(d);
+      const { lines, scores: sc } = await fetchEspnLines(d);
+      Object.assign(scores, sc);
       const now = Date.now();
       for (const [key, l] of Object.entries(lines)) { saved[key] = { ...l, t: now }; live++; }
     }
@@ -248,7 +250,8 @@ async function refreshLines() {
   } catch (e) { ok = false; }
   for (const g of DATA.games) {
     const l = saved[g.id];
-    if (l && l.t > fileTime) applyLine(g, l.spread, l.total, `${l.src} (live)`, l.t);
+    if (l && l.t > fileTime && RESULT.state(g) !== "post") applyLine(g, l.spread, l.total, `${l.src} (live)`, l.t);
+    if (scores[g.id]) g.live = scores[g.id];
   }
   await refreshInjuries();
   const savedTimes = Object.values(saved).map((l) => l.t || 0);
@@ -334,11 +337,12 @@ function renderDates() {
 
 function renderGames() {
   const games = DATA.games.filter((g) => g.date === state.date);
-  if (!games.find((g) => g.id === state.gameId)) state.gameId = games[0]?.id;
+  // open on the first game that isn't over yet
+  if (!games.find((g) => g.id === state.gameId)) state.gameId = (games.find((g) => RESULT.state(g) !== "post") || games[0])?.id;
   $("#games").innerHTML = games.map((g) => `
-    <button type="button" class="gcard" data-id="${g.id}" aria-current="${g.id === state.gameId}">
-      <div class="row"><span class="teams">${g.away} @ ${g.home}</span><span class="when">${esc(tipTime(g))}</span></div>
-      <div class="lines">${g.spread != null ? `${esc(spreadText(g))} · O/U ${g.total}` : `No line yet · model ${fmt(g.model.model_total, 0)}`}</div>
+    <button type="button" class="gcard ${RESULT.state(g)}" data-id="${g.id}" aria-current="${g.id === state.gameId}">
+      <div class="row"><span class="teams">${RESULT.teams(g)}</span>${RESULT.badge(g) || `<span class="when">${esc(tipTime(g))}</span>`}</div>
+      <div class="lines">${RESULT.state(g) === "post" ? esc(RESULT.settled(g)) : g.spread != null ? `${esc(spreadText(g))} · O/U ${g.total}` : `No line yet · model ${fmt(g.model.model_total, 0)}`}</div>
     </button>`).join("") || `<div class="empty">No games on this day.</div>`;
   $("#games").querySelectorAll(".gcard").forEach((b) => b.onclick = () => { state.gameId = b.dataset.id; state.team = null; renderGames(); });
   setHash();
@@ -358,7 +362,7 @@ function renderGame() {
     <div class="panel">
       <div class="scoreline">
         <div class="team"><img src="${logo(g.away)}" alt=""><div><div class="name">${esc(N[g.away])}</div><div class="muted small">Away · ${esc(T[g.away]?.record || "")}</div></div></div>
-        <div class="mid"><div class="pts">${fmt(g.model.away_pts, 1)} – ${fmt(g.model.home_pts, 1)}</div>projected score</div>
+        <div class="mid">${RESULT.mid(g, `${fmt(g.model.away_pts, 1)} – ${fmt(g.model.home_pts, 1)}`)}</div>
         <div class="team right"><div><div class="name">${esc(N[g.home])}</div><div class="muted small">Home · ${esc(T[g.home]?.record || "")}</div></div><img src="${logo(g.home)}" alt=""></div>
       </div>
       <div class="kv">
