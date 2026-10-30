@@ -222,3 +222,4 @@ td.why .note-chip { font-size: 11.5px; }
 .role-tag { display: inline-block; font-size: 10.5px; font-weight: 600; padding: 0 5px; border-radius: 4px; margin-left: 5px; border: 1px solid var(--line); color: var(--muted); cursor: help; }
 .role-tag.st { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
 .role-tag.shift { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
+td.out-row { text-align: left; white-space: normal; color: var(--muted); font-size: 12.5px; font-style: italic; }

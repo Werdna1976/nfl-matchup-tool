@@ -127,5 +127,15 @@ const ROLES = (() => {
     return items;
   }
 
-  return { reset, outWeight, share, scale, blend, cap, because, delta, mark, spots, spotsPanel };
+  // A player ruled out projects to nothing: every stat 0, so no ladder, finder, TD chance, or
+  // parlay leg can use his usual numbers. His usual role stays in p.base for the teammates' math.
+  function zeroOut(p, gid) {
+    const d = p.proj[gid];
+    if (!d) return;
+    for (const k of Object.keys(d)) d[k] = { mean: 0, sd: 0, dist: "poisson", f: 1 };
+  }
+  // Table row for a player ruled out, in place of his projections
+  const outRow = (cols) => `<td colspan="${cols}" class="out-row">Out: not expected to play. His usual minutes and touches are given to teammates above.</td>`;
+
+  return { reset, outWeight, share, scale, blend, cap, because, delta, mark, spots, spotsPanel, zeroOut, outRow };
 })();
