@@ -4,8 +4,8 @@ on:
   push:
     branches: [main]
   schedule:
-    # every 3 hours, so lines and stats stay fresh even if nobody opens the page
-    - cron: "17 */3 * * *"
+    # every hour, so injury news, lines, and stats stay fresh even if nobody opens the page
+    - cron: "17 * * * *"
   workflow_dispatch:
 
 permissions:

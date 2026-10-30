@@ -185,3 +185,15 @@ tr.sum td { background: var(--panel-2); font-size: 13px; }
 tr.sum.proj td { color: var(--accent); }
 table.ladder td, table.ladder th { padding: 5px 8px; }
 .modal-card .grid2 { align-items: start; }
+
+/* player notes */
+.notes-list { display: flex; flex-direction: column; }
+.note-row { display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 4px 12px; padding: 7px 4px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.note-row:hover { background: var(--panel-2); }
+.note-row.team { cursor: default; background: var(--panel-2); }
+.note-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.note-chip { font-size: 12.5px; padding: 2px 8px; border-radius: 6px; background: var(--panel-2); border: 1px solid var(--line); }
+.note-chip.good { color: var(--good); border-color: color-mix(in srgb, var(--good) 45%, transparent); }
+.note-chip.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, transparent); }
+.note-chip.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
+@media (max-width: 600px) { .note-row { grid-template-columns: minmax(0, 1fr); } }

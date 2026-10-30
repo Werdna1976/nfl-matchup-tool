@@ -15,7 +15,8 @@ Built for picking alt lines and parlay legs on Polymarket.
 ## What's on the page
 
 - **Games**: spread, total, and moneyline for this week and next, plus a projected score.
-- **Total points and spread tools**: slide to any line, or read the ladder of alternate lines, to see the model's chance of over/under or cover with the fair price in cents.
+- **Total points and spread tools**: slide to any line to see the model's chance of over/under or cover with the fair price in cents.
+- **Player notes**: injury status, good or tough matchups, hot and cold streaks, teammates ruled out (with how the player did in past games without them), and recent ESPN headlines.
 - **Matchup strength**: each offense's passing and rushing vs. the opponent's pass and run defense, the expected pass rate, and implied team points.
 - **Player projections**: QBs, RBs, WRs, TEs with a projected average and an 80% range for attempts, completions, yards, targets, receptions, carries, TDs, and INTs.
 - **Player detail**: last 3/5/all games up top with averages, projection, and expected range for every stat. Pick a stat for an odds ladder at Polymarket's line steps (25 yds for QB passing, 10 for lead RBs and good WRs, 5 for TEs and depth WRs), plus a game-by-game chart.
@@ -29,7 +30,8 @@ Built for picking alt lines and parlay legs on Polymarket.
 **Live site:** https://werdna1976.github.io/nfl-matchup-tool/nba.html
 
 - **Game days**: today, tomorrow, and the next game day, with spread, total, moneyline, and projected score.
-- **Total points and spread tools**: same slider and ladder of alternate lines as the NFL page.
+- **Total points and spread tools**: same sliders as the NFL page.
+- **Player notes**: same as the NFL page, plus back-to-backs and likely blowouts.
 - **Matchup strength**: scoring, 3-pointers, and rebounding for each offense vs. the opponent's defense, plus pace (more possessions means more stats for everyone).
 - **Player projections**: minutes, points, rebounds, assists, 3-pointers, PRA, steals, blocks, each with an 80% range, plus double-double chance.
 - **Player detail**: last 5/10/all recent games (early in the season this includes the end of last season, marked), averages, projection, 80% range, and consistency for every stat including P+R, P+A, R+A, steals + blocks, and turnovers. Pick a stat for an odds ladder: steps of 5 for points and point combos (2 for low scorers), 1 for rebounds, assists, threes, steals, blocks.
@@ -45,8 +47,10 @@ The NBA model projects minutes, then multiplies by each player's per-minute prod
 | Fresher spread and total | ESPN public scoreboard | No |
 | NBA box scores, schedule | [sportsdataverse](https://github.com/sportsdataverse/sportsdataverse-data) (ESPN data, updated daily) | No |
 | NBA lines, injury report, last night's box scores | ESPN public API | No |
+| Live injury report and headlines for player notes (both sports) | ESPN public API, read by your browser | No |
 
-A GitHub Action rebuilds the data every 3 hours and republishes the site. Each time the page
+A GitHub Action rebuilds the data every hour and republishes the site. While a page is open it
+re-checks lines, the ESPN injury report, and headlines every 10 minutes. Each time the page
 loads (or you press **Refresh**), it also asks ESPN for the latest lines. If ESPN is blocked on
 that computer, it keeps the last lines it saw.
 
