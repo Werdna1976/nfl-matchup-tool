@@ -205,12 +205,36 @@ async function refreshLines(manual) {
     ? `Lines live from ESPN as of ${new Date().toLocaleTimeString()}`
     : `Live lines blocked here, showing saved lines from ${new Date(Math.max(fileTime, ...Object.values(saved).map((l) => l.t || 0))).toLocaleString()}`;
   if (btn) { btn.disabled = false; btn.textContent = "Refresh"; }
+  await refreshInjuries();
   renderMeta(); renderGames();
 }
 let LINE_STATUS = "Checking for live lines…";
 
+// ESPN's injury report is newer than the data file's (nflverse posts it once a day), so use
+// it when this computer can reach it. NFL ids differ between the two, so match by name.
+let NEWS_STATUS = "";
+async function refreshInjuries() {
+  try {
+    const { byName, count } = await NOTES.injuries("football/nfl");
+    if (count) {
+      for (const p of Object.values(DATA.players)) {
+        const e = byName[NOTES.norm(p.name)];
+        if (e) p.inj = { ...e, wk: DATA.week, practice: p.inj?.practice || null }; else delete p.inj;
+      }
+      NEWS_STATUS = ` · injury report live as of ${new Date().toLocaleTimeString()}`;
+    }
+  } catch (e) { /* keep the file's injury report */ }
+  try { await NOTES.news("football/nfl"); } catch (e) { /* headlines are optional */ }
+}
+
+// reload the data file (rebuilt hourly) and re-check lines, injuries, and headlines
+async function reloadAll() {
+  try { DATA = await loadData(); computeRanks(); } catch (e) { /* keep what we have */ }
+  await refreshLines(true);
+}
+
 function renderMeta() {
-  $("#meta").textContent = `${DATA.season} season · stats through week ${DATA.stats_through} · data file ${new Date(DATA.updated).toLocaleString()} · ${LINE_STATUS}`;
+  $("#meta").textContent = `${DATA.season} season · stats through week ${DATA.stats_through} · data file ${new Date(DATA.updated).toLocaleString()} · ${LINE_STATUS}${NEWS_STATUS}`;
 }
 
 async function loadData() {
@@ -235,10 +259,8 @@ async function boot() {
   if (!DATA.weeks.includes(state.week)) state.week = DATA.weeks[0];
   state.gameId = hash.get("game");
   renderMeta();
-  $("#refreshBtn").onclick = async () => {
-    try { DATA = await loadData(); computeRanks(); } catch (e) { /* keep what we have */ }
-    refreshLines(true);
-  };
+  $("#refreshBtn").onclick = reloadAll;
+  NOTES.autoRefresh(reloadAll);
   $("#slipBtn").onclick = () => toggleSlip(true);
   $("#howLink").onclick = (e) => { e.preventDefault(); openHow(); };
   $("#modal").addEventListener("click", (e) => { if (e.target.id === "modal") closeModal(); });
@@ -324,27 +346,22 @@ function renderGame() {
     </div>
 
     <div class="panel" id="players"></div>
+    <div class="panel" id="notes"></div>
     <div class="panel" id="tds"></div>
     <div class="panel" id="finder"></div>
   `;
-  renderTotalTool(g); renderSpreadTool(g); renderPlayers(g); renderTds(g); renderFinder(g);
+  renderTotalTool(g); renderSpreadTool(g); renderPlayers(g); renderNotes(g); renderTds(g); renderFinder(g);
 }
 
-function lineTool(el, { title, sub, dist, def, min, max, overLabel, underLabel, legLabel, lines, rowLabel = (L) => L }) {
+function lineTool(el, { title, sub, dist, def, min, max, overLabel, underLabel, legLabel }) {
   el.innerHTML = `
     <div class="panel-head"><h2>${title}</h2><span class="muted small">${sub}</span></div>
     <div class="liner"><label class="small muted" for="${el.id}-in">Line</label>
       <input id="${el.id}-in" type="number" step="0.5" value="${def}">
       <input type="range" min="${min}" max="${max}" step="0.5" value="${def}" aria-label="Line">
     </div>
-    <div class="out"></div>
-    <div class="table-wrap"><table class="ladder">
-      <thead><tr><th>Line</th><th>${esc(overLabel("").replace(/[-+]?$/, "").trim() || "Over")}</th><th>${esc(underLabel("").replace(/[-+]?$/, "").trim() || "Under")}</th></tr></thead>
-      <tbody>${lines.map((L) => { const pr = probs(dist, L); return `<tr class="click" data-l="${L}"><td>${esc(rowLabel(L))}</td><td>${pct(pr.over)} <span class="price">${cents(pr.over)}</span></td><td>${pct(pr.under)} <span class="price">${cents(pr.under)}</span></td></tr>`; }).join("")}</tbody>
-    </table></div>
-    <div class="note">Tap a row to load that line above.</div>`;
+    <div class="out"></div>`;
   const num = el.querySelector('input[type="number"]'), rng = el.querySelector('input[type="range"]'), out = el.querySelector(".out");
-  el.querySelectorAll("tr[data-l]").forEach((tr) => tr.onclick = () => { num.value = rng.value = tr.dataset.l; update(tr.dataset.l); });
   const update = (v) => {
     const L = Number(v); const pr = probs(dist, L);
     out.innerHTML = `
@@ -372,7 +389,6 @@ function renderTotalTool(g) {
     title: "Total points", sub: `Center ${fmt(d.mean, 1)} · 80% of games land ${Math.round(quantile(0.1, d))}–${Math.round(quantile(0.9, d))}`,
     dist: d, def, min: Math.round(def - 15), max: Math.round(def + 15),
     overLabel: (L) => `Over ${L}`, underLabel: (L) => `Under ${L}`,
-    lines: Array.from({ length: 11 }, (_, i) => def - 10 + 2 * i),
     legLabel: (s, L) => `${g.away} @ ${g.home} ${s === "over" ? "Over" : "Under"} ${L} total points`,
   });
 }
@@ -389,8 +405,6 @@ function renderSpreadTool(g) {
     dist: favDist, def, min: -14, max: 21,
     overLabel: (L) => L === "" ? `${fav} covers` : `${fav} ${L >= 0 ? "-" : "+"}${Math.abs(L)} covers`,
     underLabel: (L) => L === "" ? `${dog} covers` : `${dog} ${L >= 0 ? "+" : "-"}${Math.abs(L)} covers`,
-    lines: Array.from({ length: 13 }, (_, i) => def - 6 + i).filter((L) => L > -14),
-    rowLabel: (L) => (L === 0 ? `${fav} PK` : `${fav} ${L > 0 ? "-" : "+"}${Math.abs(L)}`),
     legLabel: (s, L) => (s === "over" ? `${fav} ${L >= 0 ? "-" : "+"}${Math.abs(L)}` : `${dog} ${L >= 0 ? "+" : "-"}${Math.abs(L)}`) + ` (${g.away} @ ${g.home})`,
   });
 }
@@ -439,10 +453,13 @@ function volume(p, g) {
   const pr = p.proj[g.id] || {};
   return p.pos === "QB" ? (pr.att?.mean || 0) : (pr.car?.mean || 0) + (pr.tgt?.mean || 0);
 }
+// ESPN also lists injured reserve and suspensions; treat those like Out
+const isOut = (p) => /^(out|injured reserve|suspen)/i.test(p.inj?.status || "");
 function injBadge(p) {
   const s = p.inj?.status;
   if (!s) return "";
-  return `<span class="badge ${s === "Out" || s === "Doubtful" ? "out" : "q"}" title="${esc(p.inj.injury || "")} (week ${p.inj.wk})">${esc(s)}</span>`;
+  const tip = [p.inj.injury, p.inj.note, `week ${p.inj.wk}`].filter(Boolean).join(" · ");
+  return `<span class="badge ${isOut(p) || s === "Doubtful" ? "out" : "q"}" title="${esc(tip)}">${esc(s)}</span>`;
 }
 
 function renderPlayers(g) {
@@ -482,6 +499,69 @@ function renderPlayers(g) {
   el.querySelectorAll("tr[data-pid]").forEach((tr) => tr.onclick = () => openPlayer(tr.dataset.pid, g));
 }
 
+// ---------------------------------------------------------------- player notes
+
+// Reasons a player may have a good or bad game. Matchup is already in the projections;
+// injuries to teammates and streaks are flagged here but not built in.
+function playerNotes(p, g) {
+  const out = [], pr = p.proj[g.id], opp = p.team === g.home ? g.away : g.home;
+  if (p.inj?.status) {
+    const why = [p.inj.injury, p.inj.practice, p.inj.note].filter(Boolean).join(". ");
+    out.push({ kind: isOut(p) ? "bad" : "warn", text: `${p.inj.status}${why ? `: ${why}` : ""}` });
+    if (isOut(p)) return out;
+  }
+  const k = MAIN_STAT[p.pos], d = pr[k], name = STATS[k].label.toLowerCase();
+  if (d.mean >= 30) {   // skip depth players: one note on the starters is enough
+    if (d.f >= 1.1) out.push({ kind: "good", text: `Good matchup: ${opp} gives up ${name} (+${Math.round((d.f - 1) * 100)}%)` });
+    else if (d.f <= 0.9) out.push({ kind: "bad", text: `Tough matchup: ${opp} limits ${name} (−${Math.round((1 - d.f) * 100)}%)` });
+  }
+  // hot or cold: last 3 games against the season
+  if (p.log.length >= 5) {
+    const a = avg(p.log.slice(-3).map((r) => r[k])), b = avg(p.log.map((r) => r[k])), min = k === "pyd" ? 40 : 15;
+    if (b >= 15 && a >= 1.3 * b && a - b >= min) out.push({ kind: "good", text: `Hot: ${Math.round(a)} ${name} a game last 3 (season ${Math.round(b)})` });
+    else if (b >= 15 && a <= 0.7 * b && b - a >= min) out.push({ kind: "bad", text: `Cold: ${Math.round(a)} ${name} a game last 3 (season ${Math.round(b)})` });
+  }
+  // teammates ruled out: how this player did in past games without them
+  for (const pid of g.players[p.team] || []) {
+    const m = DATA.players[pid];
+    if (m === p || !isOut(m)) continue;
+    if (m.pos === "QB" && p.pos !== "QB") { out.push({ kind: "bad", text: `QB ${m.name} is out: backup throwing to him` }); continue; }
+    const catcher = (x) => x === "WR" || x === "TE";
+    const share = p.pos === "RB" && m.pos === "RB" ? "car" : catcher(p.pos) && catcher(m.pos) ? "tgt" : null;
+    if (!share || volume(m, g) < 4) continue;
+    const sp = NOTES.without(p, m, (r) => r[share], "w");
+    if (sp && Math.abs(sp.without - sp.with) >= 1.5) {
+      out.push({ kind: sp.without > sp.with ? "good" : "bad", text: `Without ${m.name} (out): ${fmt(sp.without, 1)} ${STATS[share].short.toLowerCase()} a game in ${sp.n} vs ${fmt(sp.with, 1)} with him` });
+    } else if (volume(p, g) >= 6) {
+      out.push({ kind: "info", text: `${m.name} (${m.pos}) is out, so more ${share === "car" ? "carries" : "targets"} to go around` });
+    }
+  }
+  for (const n of NOTES.newsFor(p.name).slice(0, 2)) out.push({ kind: "info", text: `News: ${n.headline}` });
+  return out;
+}
+
+// Notes for a whole team: scoring expectations and weather
+function teamNotes(g, tm) {
+  const out = [], pts = tm === g.home ? g.model.home_pts : g.model.away_pts, avgPts = DATA.teams[tm].off.ppg;
+  if (pts >= avgPts + 4) out.push({ kind: "good", text: `${tm} implied for ${fmt(pts, 1)} points, above its ${fmt(avgPts, 1)} average: TD chances up` });
+  else if (pts <= avgPts - 4) out.push({ kind: "bad", text: `${tm} implied for ${fmt(pts, 1)} points, below its ${fmt(avgPts, 1)} average` });
+  if (g.wind != null && g.wind >= 15 && !/dome|closed/i.test(g.roof || "")) out.push({ kind: "bad", text: `Wind ${g.wind} mph: passing and kicking suffer` });
+  return out;
+}
+
+function renderNotes(g) {
+  const rows = [g.away, g.home].flatMap((tm) => [
+    ...(teamNotes(g, tm).length ? [{ name: DATA.team_names[tm], tag: "team", notes: teamNotes(g, tm) }] : []),
+    ...playerRows(g, tm).map((p) => ({ pid: p.pid, name: p.name, tag: `${p.team} ${p.pos}`, notes: playerNotes(DATA.players[p.pid], g) })),
+  ]);
+  NOTES.panel($("#notes"), rows, [
+    ["ESPN injury report", "https://www.espn.com/nfl/injuries"],
+    ["RotoWire news", "https://www.rotowire.com/football/news.php"],
+    ["r/sportsbook", "https://www.reddit.com/r/sportsbook/"],
+  ]);
+  $("#notes").querySelectorAll(".note-row[data-pid]:not([data-pid=''])").forEach((r) => r.onclick = () => openPlayer(r.dataset.pid, g));
+}
+
 // ---------------------------------------------------------------- alt-line finder
 
 function finderLine(d, k, p, conf, side) {
@@ -499,7 +579,7 @@ function renderFinder(g) {
   const items = [];
   for (const tm of [g.away, g.home]) {
     for (const p of playerRows(g, tm)) {
-      if (p.inj?.status === "Out") continue;
+      if (isOut(p)) continue;
       for (const k of FEATURED[p.pos]) {
         const d = p.proj[g.id][k];
         if (!d || d.mean < (STATS[k].count ? 0.05 : 1)) continue;
@@ -553,7 +633,7 @@ const twoTd = (lam) => 1 - Math.exp(-lam) * (1 + lam);
 function renderTds(g) {
   const el = $("#tds");
   const items = [g.away, g.home].flatMap((tm) => playerRows(g, tm))
-    .filter((p) => p.inj?.status !== "Out")
+    .filter((p) => !isOut(p))
     .map((p) => ({ p, lam: tdLambda(p, g), scored: p.log.filter((r) => r.rtd + r.td > 0).length }))
     .filter((it) => it.lam > 0.02)
     .sort((a, b) => b.lam - a.lam);
@@ -658,7 +738,7 @@ function renderPlayerView(pid, g) {
         <div class="muted">${esc(DATA.team_names[p.team])} ${p.pos} · vs ${esc(DATA.team_names[opp])} · ${p.log.length} games played</div>
         <div class="small">Anytime TD <b>${pct(anyTd(lam))}</b> <span class="muted">(fair ${cents(anyTd(lam))}, ${american(anyTd(lam))})</span>
           <button class="btn add" id="tdAdd">+ Slip</button></div>
-        ${p.inj ? `<div class="small muted">Injury report (week ${p.inj.wk}): ${esc(p.inj.injury || "–")}${p.inj.practice ? `, ${esc(p.inj.practice)}` : ""}</div>` : ""}</div>
+        ${(() => { const ns = [...playerNotes(p, g), ...teamNotes(g, p.team)]; return ns.length ? `<div class="note-chips" style="margin-top:6px">${ns.map(NOTES.chip).join("")}</div>` : ""; })()}</div>
       <button class="x" aria-label="Close">×</button>
     </div>
 

@@ -217,26 +217,18 @@ async function fetchEspnLines(day) {
   return out;
 }
 
+let NEWS_STATUS = "";
 async function refreshInjuries() {
   try {
-    const j = await espnJson("injuries");
-    const byId = {}, byName = {};
-    for (const team of j.injuries || []) for (const it of team.injuries || []) {
-      const a = it.athlete || {};
-      let id = a.id ? String(a.id) : null;
-      if (!id) for (const l of a.links || []) { const m = /\/id\/(\d+)/.exec(l.href || ""); if (m) { id = m[1]; break; } }
-      const d = it.details || {};
-      const e = { status: it.status || null, injury: [d.side && d.side !== "Not Specified" ? d.side : null, d.type].filter(Boolean).join(" ") || null,
-        note: it.shortComment || null, date: (it.date || "").slice(0, 10) || null, ret: d.returnDate || null };
-      if (id) byId[id] = e;
-      if (a.displayName) byName[a.displayName.toLowerCase()] = e;
-    }
-    if (!Object.keys(byId).length && !Object.keys(byName).length) return;
+    const { byId, byName, count } = await NOTES.injuries("basketball/nba");
+    if (!count) return;
     for (const [pid, p] of Object.entries(DATA.players)) {
-      const e = byId[pid] || byName[p.name.toLowerCase()];
-      if (e && e.status) p.inj = e; else delete p.inj;
+      const e = byId[pid] || byName[NOTES.norm(p.name)];
+      if (e) p.inj = e; else delete p.inj;
     }
+    NEWS_STATUS = ` · injury report live as of ${new Date().toLocaleTimeString()}`;
   } catch (e) { /* keep the file's injury report */ }
+  try { await NOTES.news("basketball/nba"); } catch (e) { /* headlines are optional */ }
 }
 
 async function refreshLines() {
@@ -267,8 +259,14 @@ async function refreshLines() {
   renderMeta(); renderGames();
 }
 
+// reload the data file (rebuilt hourly) and re-check lines, injuries, and headlines
+async function reloadAll() {
+  try { DATA = await loadData(); computeRanks(); DD_CACHE.clear(); } catch (e) { /* keep what we have */ }
+  await refreshLines();
+}
+
 function renderMeta() {
-  $("#meta").textContent = `${DATA.season} season · stats through ${DATA.stats_through ? shortDate(DATA.stats_through) : "–"} · data file ${new Date(DATA.updated).toLocaleString()} · ${LINE_STATUS}`;
+  $("#meta").textContent = `${DATA.season} season · stats through ${DATA.stats_through ? shortDate(DATA.stats_through) : "–"} · data file ${new Date(DATA.updated).toLocaleString()} · ${LINE_STATUS}${NEWS_STATUS}`;
 }
 
 async function loadData() {
@@ -293,10 +291,8 @@ async function boot() {
   if (!DATA.dates.includes(state.date)) state.date = DATA.dates[0];
   state.gameId = hash.get("game");
   renderMeta();
-  $("#refreshBtn").onclick = async () => {
-    try { DATA = await loadData(); computeRanks(); DD_CACHE.clear(); } catch (e) { /* keep what we have */ }
-    refreshLines();
-  };
+  $("#refreshBtn").onclick = reloadAll;
+  NOTES.autoRefresh(reloadAll);
   $("#slipBtn").onclick = () => toggleSlip(true);
   $("#howLink").onclick = (e) => { e.preventDefault(); openHow(); };
   $("#modal").addEventListener("click", (e) => { if (e.target.id === "modal") closeModal(); });
@@ -385,26 +381,21 @@ function renderGame() {
     </div>
 
     <div class="panel" id="players"></div>
+    <div class="panel" id="notes"></div>
     <div class="panel" id="finder"></div>
   `;
-  renderTotalTool(g); renderSpreadTool(g); renderPlayers(g); renderFinder(g);
+  renderTotalTool(g); renderSpreadTool(g); renderPlayers(g); renderNotes(g); renderFinder(g);
 }
 
-function lineTool(el, { title, sub, dist, def, min, max, overLabel, underLabel, legLabel, lines, rowLabel = (L) => L }) {
+function lineTool(el, { title, sub, dist, def, min, max, overLabel, underLabel, legLabel }) {
   el.innerHTML = `
     <div class="panel-head"><h2>${title}</h2><span class="muted small">${sub}</span></div>
     <div class="liner"><label class="small muted" for="${el.id}-in">Line</label>
       <input id="${el.id}-in" type="number" step="0.5" value="${def}">
       <input type="range" min="${min}" max="${max}" step="0.5" value="${def}" aria-label="Line">
     </div>
-    <div class="out"></div>
-    <div class="table-wrap"><table class="ladder">
-      <thead><tr><th>Line</th><th>${esc(overLabel("").replace(/[-+]?$/, "").trim() || "Over")}</th><th>${esc(underLabel("").replace(/[-+]?$/, "").trim() || "Under")}</th></tr></thead>
-      <tbody>${lines.map((L) => { const pr = probs(dist, L); return `<tr class="click" data-l="${L}"><td>${esc(rowLabel(L))}</td><td>${pct(pr.over)} <span class="price">${cents(pr.over)}</span></td><td>${pct(pr.under)} <span class="price">${cents(pr.under)}</span></td></tr>`; }).join("")}</tbody>
-    </table></div>
-    <div class="note">Tap a row to load that line above.</div>`;
+    <div class="out"></div>`;
   const num = el.querySelector('input[type="number"]'), rng = el.querySelector('input[type="range"]'), out = el.querySelector(".out");
-  el.querySelectorAll("tr[data-l]").forEach((tr) => tr.onclick = () => { num.value = rng.value = tr.dataset.l; update(tr.dataset.l); });
   const update = (v) => {
     const L = Number(v); const pr = probs(dist, L);
     out.innerHTML = `
@@ -432,7 +423,6 @@ function renderTotalTool(g) {
     title: "Total points", sub: `Center ${fmt(d.mean, 1)} · 80% of games land ${Math.round(quantile(0.1, d))}–${Math.round(quantile(0.9, d))}`,
     dist: d, def, min: Math.round(def - 30), max: Math.round(def + 30),
     overLabel: (L) => `Over ${L}`, underLabel: (L) => `Under ${L}`,
-    lines: Array.from({ length: 15 }, (_, i) => def - 14 + 2 * i),
     legLabel: (s, L) => `${g.away} @ ${g.home} ${s === "over" ? "Over" : "Under"} ${L} total points`,
   });
 }
@@ -449,8 +439,6 @@ function renderSpreadTool(g) {
     dist: favDist, def, min: -15, max: 25,
     overLabel: (L) => L === "" ? `${fav} covers` : `${fav} ${L >= 0 ? "-" : "+"}${Math.abs(L)} covers`,
     underLabel: (L) => L === "" ? `${dog} covers` : `${dog} ${L >= 0 ? "+" : "-"}${Math.abs(L)} covers`,
-    lines: Array.from({ length: 15 }, (_, i) => def - 7 + i).filter((L) => L > -15),
-    rowLabel: (L) => (L === 0 ? `${fav} PK` : `${fav} ${L > 0 ? "-" : "+"}${Math.abs(L)}`),
     legLabel: (s, L) => (s === "over" ? `${fav} ${L >= 0 ? "-" : "+"}${Math.abs(L)}` : `${dog} ${L >= 0 ? "+" : "-"}${Math.abs(L)}`) + ` (${g.away} @ ${g.home})`,
   });
 }
@@ -562,6 +550,74 @@ function multi(pid, g) {
   const out = { dd: dd / N, td: td / N };
   DD_CACHE.set(key, out);
   return out;
+}
+
+// ---------------------------------------------------------------- player notes
+
+const NOTE_STAT = { pts: ["scoring", "pts", 3], reb: ["rebounding", "reb", 2], ast: ["assists", "ast", 1.5], fg3: ["3-point", "threes", 1] };
+
+// Reasons a player may have a good or bad night. The projections already include the
+// matchup and pace; injuries to teammates and streaks are flagged here but not built in.
+function playerNotes(p, g) {
+  const out = [], pr = p.proj[g.id];
+  if (p.inj?.status) {
+    out.push({ kind: isOut(p) ? "bad" : "warn", text: `${p.inj.status}${p.inj.injury ? ` (${p.inj.injury})` : ""}${p.inj.note ? `. ${p.inj.note}` : ""}` });
+    if (isOut(p)) return out;
+  }
+  // hot or cold: last 5 games against this season (or everything logged, early on)
+  const cur = thisSeason(p), base = cur.length >= 8 ? cur : p.log, last = p.log.slice(-5);
+  if (last.length >= 4 && base.length >= 6) {
+    for (const [k, [, unit, minDiff]] of Object.entries(NOTE_STAT)) {
+      const a = avg(last.map((r) => r[k])), b = avg(base.map((r) => r[k]));
+      if (b < (k === "pts" ? 8 : 1.5)) continue;
+      if (a >= 1.25 * b && a - b >= minDiff) out.push({ kind: "good", text: `Hot: ${fmt(a, 1)} ${unit} last ${last.length} (avg ${fmt(b, 1)})` });
+      else if (a <= 0.75 * b && b - a >= minDiff) out.push({ kind: "bad", text: `Cold: ${fmt(a, 1)} ${unit} last ${last.length} (avg ${fmt(b, 1)})` });
+    }
+  }
+  // teammates ruled out: show how this player did in past games without them
+  for (const pid of g.players[p.team] || []) {
+    const m = DATA.players[pid];
+    if (m === p || !isOut(m) || (m.proj[g.id]?.min.mean || 0) < 20) continue;
+    const sp = NOTES.without(p, m, (r) => r.pts, "d");
+    if (sp && Math.abs(sp.without - sp.with) >= 2) {
+      out.push({ kind: sp.without > sp.with ? "good" : "bad", text: `Without ${m.name} (out): ${fmt(sp.without, 1)} pts in ${sp.n} games vs ${fmt(sp.with, 1)} with him` });
+    } else if (pr.min.mean >= 24) {
+      out.push({ kind: "info", text: `${m.name} is out, so more shots and minutes to go around` });
+    }
+  }
+  for (const n of NOTES.newsFor(p.name).slice(0, 2)) out.push({ kind: "info", text: `News: ${n.headline}` });
+  return out;
+}
+
+// Notes that apply to a whole team: matchup, tired legs, and expected blowouts
+function teamNotes(g, tm) {
+  const out = [];
+  const prev = new Date(`${g.date}T12:00:00Z`); prev.setUTCDate(prev.getUTCDate() - 1);
+  const played = (g.players[tm] || []).some((pid) => DATA.players[pid].log.at(-1)?.d === prev.toISOString().slice(0, 10));
+  if (played) out.push({ kind: "warn", text: `${tm} played last night: rest days or lighter minutes possible` });
+  // matchup and pace apply to the whole roster (and are already in every projection)
+  const opp = tm === g.home ? g.away : g.home, sc = g.script[tm], O = DATA.teams[opp];
+  const f = { pts: sc.pts_f, reb: sc.pace_f * O.f_reb, ast: sc.pace_f * O.f_ast, fg3: sc.pace_f * O.f_fg3 };
+  for (const [k, [what]] of Object.entries(NOTE_STAT)) {
+    if (f[k] >= 1.05) out.push({ kind: "good", text: `Good ${what} spot vs ${opp} (+${Math.round((f[k] - 1) * 100)}%)` });
+    else if (f[k] <= 0.95) out.push({ kind: "bad", text: `Tough ${what} spot vs ${opp} (−${Math.round((1 - f[k]) * 100)}%)` });
+  }
+  const margin = g.script[tm].margin;
+  if (margin > 10) out.push({ kind: "warn", text: `${tm} favored by ${fmt(margin, 0)}: its starters may sit late in a blowout` });
+  return out;
+}
+
+function renderNotes(g) {
+  const rows = [g.away, g.home].flatMap((tm) => [
+    ...(teamNotes(g, tm).length ? [{ name: DATA.team_names[tm], tag: "team", notes: teamNotes(g, tm) }] : []),
+    ...playerRows(g, tm).map((p) => ({ pid: p.pid, name: p.name, tag: `${p.team} ${p.pos}`, notes: playerNotes(DATA.players[p.pid], g) })),
+  ]);
+  NOTES.panel($("#notes"), rows, [
+    ["ESPN injury report", "https://www.espn.com/nba/injuries"],
+    ["RotoWire lineups", "https://www.rotowire.com/basketball/nba-lineups.php"],
+    ["r/sportsbook", "https://www.reddit.com/r/sportsbook/"],
+  ]);
+  $("#notes").querySelectorAll(".note-row[data-pid]:not([data-pid=''])").forEach((r) => r.onclick = () => openPlayer(r.dataset.pid, g));
 }
 
 // ---------------------------------------------------------------- alt-line finder
@@ -702,7 +758,7 @@ function renderPlayerView(pid, g) {
         <div class="small">Double-double <b>${pct(mm.dd)}</b> <span class="muted">(fair ${cents(mm.dd)}, ${american(mm.dd)}; ${ddPast} of last ${recent.length})</span>
           <button class="btn add" id="ddAdd">+ Slip</button>
           ${mm.td >= 0.005 ? ` · Triple-double <b>${pct(mm.td)}</b> <button class="btn add" id="tdAdd">+ Slip</button>` : ""}</div>
-        ${p.inj ? `<div class="small muted">Injury report: ${esc([p.inj.injury, p.inj.note].filter(Boolean).join(". ") || "–")}</div>` : ""}</div>
+        ${(() => { const ns = [...playerNotes(p, g), ...teamNotes(g, p.team)]; return ns.length ? `<div class="note-chips" style="margin-top:6px">${ns.map(NOTES.chip).join("")}</div>` : ""; })()}</div>
       <button class="x" aria-label="Close">×</button>
     </div>
 
