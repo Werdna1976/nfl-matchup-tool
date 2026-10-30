@@ -77,7 +77,7 @@ h3 { font-size: 15px; margin: 0 0 6px; }
 .theme-btn { position: absolute; top: 10px; right: 16px; border: 1px solid var(--line); background: var(--panel-2); border-radius: 8px; width: 34px; height: 32px; cursor: pointer; font-size: 16px; line-height: 1; }
 .slip-btn span { background: rgba(255,255,255,.25); border-radius: 999px; padding: 0 7px; margin-left: 4px; }
 
-main { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 16px; padding: 16px; max-width: 1400px; margin: 0 auto; }
+main { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 16px; padding: 16px; max-width: 1600px; margin: 0 auto; }
 @media (max-width: 900px) { main { grid-template-columns: minmax(0, 1fr); } }
 
 .games { display: flex; flex-direction: column; gap: 8px; }
@@ -132,7 +132,7 @@ main { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 16px; pa
 .tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
 .table-wrap { overflow-x: auto; }
 table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
-th, td { padding: 6px 8px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+th, td { padding: 6px 7px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
 th { font-size: 12px; font-weight: 600; color: var(--muted); }
 th:first-child, td:first-child { text-align: left; }
 tbody tr.click { cursor: pointer; }
@@ -143,12 +143,12 @@ td .rng { display: block; font-size: 11.5px; color: var(--muted); }
 .badge { font-size: 11px; padding: 1px 6px; border-radius: 6px; margin-left: 6px; font-weight: 600; }
 .badge.out { background: var(--bad); color: #fff; }
 .badge.q { background: var(--warn); color: #fff; }
-.stab { font-size: 11.5px; }
+.stab { font-size: 11.5px; display: inline-block; white-space: normal; line-height: 1.15; max-width: 4.6em; }
 .stab.s1 { color: var(--good); } .stab.s2 { color: var(--good); } .stab.s3 { color: var(--warn); } .stab.s4 { color: var(--bad); }
 
 .modal { position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 20; display: flex; align-items: flex-start; justify-content: center; padding: 24px 12px; overflow-y: auto; }
 .modal[hidden] { display: none; }
-.modal-card { background: var(--bg); border-radius: 14px; width: 100%; max-width: 980px; padding: 16px; border: 1px solid var(--line); }
+.modal-card { background: var(--bg); border-radius: 14px; width: 100%; max-width: 1320px; padding: 16px; border: 1px solid var(--line); }
 .modal-head { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; }
 .modal-head img { width: 64px; height: 64px; border-radius: 50%; object-fit: cover; background: var(--panel-2); }
 .modal-head .x { margin-left: auto; }
