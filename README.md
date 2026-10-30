@@ -16,6 +16,8 @@ Built for picking alt lines and parlay legs on Polymarket.
 
 - **Games**: spread, total, and moneyline for this week and next, plus a projected score.
 - **Total points and spread tools**: slide to any line to see the model's chance of over/under or cover with the fair price in cents.
+- **Teammate injuries built in**: when a player is Out or Doubtful, his minutes (NBA) or carries and targets (NFL) are handed to teammates, blended with how they did in past games without him.
+- **Best spots**: props where the projection sits well above the player's usual line (upside) or a steady player should clear it (safe floor).
 - **Player notes**: injury status, good or tough matchups, hot and cold streaks, teammates ruled out (with how the player did in past games without them), and recent ESPN headlines.
 - **Matchup strength**: each offense's passing and rushing vs. the opponent's pass and run defense, the expected pass rate, and implied team points.
 - **Player projections**: QBs, RBs, WRs, TEs with a projected average and an 80% range for attempts, completions, yards, targets, receptions, carries, TDs, and INTs.
@@ -31,6 +33,8 @@ Built for picking alt lines and parlay legs on Polymarket.
 
 - **Game days**: today, tomorrow, and the next game day, with spread, total, moneyline, and projected score.
 - **Total points and spread tools**: same sliders as the NFL page.
+- **Teammate injuries built in**: when a player is Out or Doubtful, his minutes (NBA) or carries and targets (NFL) are handed to teammates, blended with how they did in past games without him.
+- **Best spots**: props where the projection sits well above the player's usual line (upside) or a steady player should clear it (safe floor).
 - **Player notes**: same as the NFL page, plus back-to-backs and likely blowouts.
 - **Matchup strength**: scoring, 3-pointers, and rebounding for each offense vs. the opponent's defense, plus pace (more possessions means more stats for everyone).
 - **Player projections**: minutes, points, rebounds, assists, 3-pointers, PRA, steals, blocks, each with an 80% range, plus double-double chance.
