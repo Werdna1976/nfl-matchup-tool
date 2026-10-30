@@ -230,6 +230,7 @@ async function refreshInjuries() {
     NEWS_STATUS = ` · injury report live as of ${new Date().toLocaleTimeString()}`;
   } catch (e) { /* keep the file's injury report */ }
   try { await NOTES.news("basketball/nba"); } catch (e) { /* headlines are optional */ }
+  adjustForInjuries();
 }
 
 async function refreshLines() {
@@ -289,6 +290,7 @@ async function boot() {
   }
   fetch("data/nba_backtest.json", { cache: "no-cache" }).then((r) => r.json()).then((b) => { BACKTEST = b; }).catch(() => {});
   computeRanks();
+  adjustForInjuries();
   const hash = new URLSearchParams(location.hash.slice(1));
   state.date = hash.get("date");
   if (!DATA.dates.includes(state.date)) state.date = DATA.dates[0];
@@ -385,10 +387,11 @@ function renderGame() {
     </div>
 
     <div class="panel" id="players"></div>
+    <div class="panel" id="spots"></div>
     <div class="panel" id="notes"></div>
     <div class="panel" id="finder"></div>
   `;
-  renderTotalTool(g); renderSpreadTool(g); renderPlayers(g); renderNotes(g); renderFinder(g);
+  renderTotalTool(g); renderSpreadTool(g); renderPlayers(g); renderSpots(g); renderNotes(g); renderFinder(g);
 }
 
 function lineTool(el, { title, sub, dist, def, min, max, overLabel, underLabel, legLabel }) {
@@ -501,7 +504,7 @@ function renderPlayers(g) {
   const el = $("#players");
   const ps = playerRows(g, state.team);
   el.innerHTML = `
-    <div class="panel-head"><h2>Player projections this game</h2><span class="muted small">Bold = projected average. Small text = 80% range. Tap a player for game logs and lines.</span></div>
+    <div class="panel-head"><h2>Player projections this game</h2><span class="muted small">Bold = projected average (▲▼ = changed for a teammate who is out; hover for details). Small text = 80% range. Tap a player for game logs and lines.</span></div>
     <div class="tabs">
       ${[g.away, g.home].map((t) => `<button class="chip" data-team="${t}" aria-pressed="${t === state.team}">${esc(DATA.team_names[t])}</button>`).join("")}
     </div>
@@ -512,12 +515,81 @@ function renderPlayers(g) {
         return `<tr class="click" data-pid="${p.pid}"><td><span class="pname">${esc(p.name)}</span><span class="pos-tag">${esc(p.pos)}</span>${injBadge(p)}</td>
           ${TABLE_KEYS.map((k) => {
             const d = pr[k];
-            return `<td title="This season avg ${fmt(avg(cur.map((r) => val(r, k))), 1)} · last 5 avg ${fmt(avg(last5.map((r) => val(r, k))), 1)}"><b>${fmt(d.mean, STATS[k].dec)}</b><span class="rng">${rangeTxt(d)}</span></td>`;
+            return `<td title="This season avg ${fmt(avg(cur.map((r) => val(r, k))), 1)} · last 5 avg ${fmt(avg(last5.map((r) => val(r, k))), 1)}"><b>${fmt(d.mean, STATS[k].dec)}</b>${ROLES.mark(p, g.id, k, STATS[k].dec)}<span class="rng">${rangeTxt(d)}</span></td>`;
           }).join("")}
           <td>${pct(multi(p.pid, g).dd)}</td><td>${cur.length}</td></tr>`;
       }).join("")}</tbody></table></div>` : `<div class="empty">No players with recent minutes found.</div>`}`;
   el.querySelectorAll("[data-team]").forEach((b) => b.onclick = () => { state.team = b.dataset.team; renderPlayers(g); });
   el.querySelectorAll("tr[data-pid]").forEach((tr) => tr.onclick = () => openPlayer(tr.dataset.pid, g));
+}
+
+// ---------------------------------------------------------------- teammate injuries
+
+const RATE_KEYS = ["pts", "reb", "ast", "fg3", "stl", "blk", "tov"];
+const COMBO_KEYS = ALL_KEYS.filter((k) => STATS[k].parts);
+const posGroup = (pos) => (/C/.test(pos || "") ? 2 : /F/.test(pos || "") ? 1 : 0);   // guard, forward, center
+const AFFINITY = [3, 1.5, 0.5];   // same position group, next one over, guard <-> center
+
+// When a player is out, his minutes go mostly to teammates at his position who have room to
+// play more (a 36-minute starter can't absorb much). Whatever scoring, rebounding, and passing
+// those extra minutes don't cover gets spread across the rest (bigger roles for everyone),
+// less 10% because teams usually play a bit worse without a regular. Then it's blended with
+// how each teammate really did in past games without him.
+function adjustForInjuries() {
+  ROLES.reset(DATA);
+  for (const g of DATA.games) {
+    for (const tm of [g.home, g.away]) {
+      const roster = (g.players[tm] || []).map((pid) => DATA.players[pid]);
+      for (const m of roster) {
+        const w = ROLES.outWeight(m);
+        if (!w) continue;
+        const share = w * ROLES.share(m, tm, roster, "d", g.date, 5);
+        const mp = m.base[g.id];
+        if (share < 0.2 || mp.min.mean < 10) continue;
+        const mates = roster.filter((p) => p !== m && !ROLES.outWeight(p));
+        const before = mates.map((p) => p.proj[g.id].pts.mean);
+        const wt = mates.map((p) => {
+          const mn = p.proj[g.id].min.mean;
+          return mn * AFFINITY[Math.abs(posGroup(p.pos) - posGroup(m.pos))] * Math.min(1, Math.max(0, 40 - mn) / 20);
+        });
+        const W = wt.reduce((a, b) => a + b, 0);
+        if (!W) continue;
+        const vac = share * mp.min.mean;
+        const add = mates.map((p, i) => Math.min(vac * wt[i] / W, Math.max(0, 40 - p.proj[g.id].min.mean)));
+        // what the extra minutes cover at each teammate's own per-minute rates
+        const covered = Object.fromEntries(RATE_KEYS.map((k) => [k, mates.reduce((a, p, i) => {
+          const d = p.proj[g.id]; return a + (d.min.mean > 0 ? add[i] * d[k].mean / d.min.mean : 0);
+        }, 0)]));
+        mates.forEach((p, i) => {
+          const d = p.proj[g.id], r = (d.min.mean + add[i]) / d.min.mean;
+          if (add[i] > 0.05) { for (const k of ["min", ...RATE_KEYS]) ROLES.scale(d[k], r); ROLES.because(p, g.id, m); }
+        });
+        for (const k of RATE_KEYS) {
+          const gap = share * mp[k].mean * 0.9 - covered[k];
+          const pool = mates.reduce((a, p) => a + p.proj[g.id][k].mean, 0);
+          if (gap > 0 && pool > 0) for (const p of mates) { ROLES.scale(p.proj[g.id][k], 1 + gap / pool); ROLES.because(p, g.id, m); }
+        }
+        // real games without him
+        mates.forEach((p, i) => {
+          const d = p.proj[g.id], rm = d.pts.mean / Math.max(before[i], 0.1);
+          const r = ROLES.blend(p, m, (x) => x.pts, "d", rm);
+          if (Math.abs(r - rm) > 1e-6) for (const k of RATE_KEYS) ROLES.scale(d[k], Math.max(0.6, r / rm));
+        });
+        ROLES.cap(mates, before, share * mp.pts.mean, (p) => p.proj[g.id].pts.mean,
+          (p, r) => { for (const k of RATE_KEYS) ROLES.scale(p.proj[g.id][k], r); });
+      }
+      // combined props follow their parts
+      for (const p of roster) {
+        const d = p.proj[g.id], b = p.base[g.id];
+        if (!d) continue;
+        for (const c of COMBO_KEYS) {
+          const was = STATS[c].parts.reduce((a, k) => a + b[k].mean, 0), now = STATS[c].parts.reduce((a, k) => a + d[k].mean, 0);
+          if (was > 0) ROLES.scale(d[c], now / was);
+        }
+      }
+    }
+  }
+  DD_CACHE.clear();
 }
 
 // ---------------------------------------------------------------- double-doubles
@@ -561,7 +633,7 @@ function multi(pid, g) {
 const NOTE_STAT = { pts: ["scoring", "pts", 3], reb: ["rebounding", "reb", 2], ast: ["assists", "ast", 1.5], fg3: ["3-point", "threes", 1] };
 
 // Reasons a player may have a good or bad night. The projections already include the
-// matchup and pace; injuries to teammates and streaks are flagged here but not built in.
+// matchup, pace, and teammates who are out; streaks are flagged here but not built in.
 function playerNotes(p, g) {
   const out = [], pr = p.proj[g.id];
   if (p.inj?.status) {
@@ -585,10 +657,10 @@ function playerNotes(p, g) {
     const sp = NOTES.without(p, m, (r) => r.pts, "d");
     if (sp && Math.abs(sp.without - sp.with) >= 2) {
       out.push({ kind: sp.without > sp.with ? "good" : "bad", text: `Without ${m.name} (out): ${fmt(sp.without, 1)} pts in ${sp.n} games vs ${fmt(sp.with, 1)} with him` });
-    } else if (pr.min.mean >= 24) {
-      out.push({ kind: "info", text: `${m.name} is out, so more shots and minutes to go around` });
     }
   }
+  const up = ROLES.delta(p, g.id, "pts"), upMin = ROLES.delta(p, g.id, "min");
+  if (up || upMin) out.push({ kind: up >= 0 && upMin >= 0 ? "good" : "bad", text: `Projection ${up >= 0 ? "up" : "down"} for ${p.why[g.id].join(", ")} out: ${fmt(p.base[g.id].pts.mean, 1)} → ${fmt(pr.pts.mean, 1)} pts, ${fmt(p.base[g.id].min.mean, 0)} → ${fmt(pr.min.mean, 0)} min` });
   for (const n of NOTES.newsFor(p.name).slice(0, 2)) out.push({ kind: "info", text: `News: ${n.headline}` });
   return out;
 }
@@ -622,6 +694,29 @@ function renderNotes(g) {
     ["r/sportsbook", "https://www.reddit.com/r/sportsbook/"],
   ]);
   $("#notes").querySelectorAll(".note-row[data-pid]:not([data-pid=''])").forEach((r) => r.onclick = () => openPlayer(r.dataset.pid, g));
+}
+
+// ---------------------------------------------------------------- best spots
+
+// Featured props for regulars, measured against each player's last 10 games before this one
+function renderSpots(g) {
+  const cand = [];
+  for (const tm of [g.away, g.home]) {
+    for (const p of playerRows(g, tm)) {
+      if (ROLES.outWeight(p) || p.proj[g.id].min.mean < 20) continue;
+      const recent = p.log.filter((r) => r.d < g.date).slice(-10);
+      for (const k of FEATURED) {
+        const d = p.proj[g.id][k], vals = recent.map((r) => val(r, k));
+        if (!d || avg(vals) < (k === "pts" || k === "pra" ? 8 : 1.5)) continue;
+        cand.push({ p, pid: p.pid, gid: g.id, k, d, vals, label: STATS[k].label, tag: `${p.team} ${p.pos}`, st: stability(vals) });
+      }
+    }
+  }
+  ROLES.spotsPanel($("#spots"), ROLES.spots(cand), {
+    dec: (k) => STATS[k].dec,
+    onAdd: (it) => addLeg({ label: `${it.p.name} over ${it.line} ${it.label.toLowerCase()}`, p: it.over, game: g.id }),
+  });
+  $("#spots").querySelectorAll("tr[data-pid]").forEach((tr) => tr.onclick = () => openPlayer(tr.dataset.pid, g));
 }
 
 // ---------------------------------------------------------------- alt-line finder
@@ -679,7 +774,7 @@ function renderFinder(g) {
         <td><span class="stab ${it.st.cls}">${it.st.label}</span></td>
         <td><button class="btn add" data-i="${i}">+ Slip</button></td></tr>`).join("")}</tbody>
     </table></div>
-    <div class="note">"Hit" counts recent games (this season, plus the end of last season early on) that would have cleared the line. Ranges assume normal minutes; check the injury report before betting, since a teammate sitting out changes everyone's role.</div>`;
+    <div class="note">"Hit" counts recent games (this season, plus the end of last season early on) that would have cleared the line. Teammates listed Out or Doubtful are built in; a late scratch isn't until the page refreshes.</div>`;
   el.querySelectorAll("[data-side]").forEach((b) => b.onclick = () => { state.side = b.dataset.side; renderFinder(g); });
   el.querySelectorAll("[data-conf]").forEach((b) => b.onclick = () => { state.conf = Number(b.dataset.conf); renderFinder(g); });
   el.querySelectorAll("[data-prop]").forEach((b) => b.onclick = () => { state.prop = b.dataset.prop; renderFinder(g); });
@@ -892,7 +987,8 @@ function openHow() {
       <p><b>Pace and matchup.</b> A fast game means more possessions and more stats for everyone. Rebounds, assists, and threes are scaled by how many the opponent allows per 100 possessions compared with the league. Points follow the team's implied score from the betting spread and total. Big favorites' starters lose a few minutes to expected blowouts.</p>
       <p><b>Ranges.</b> Each player's own game-to-game swing, blended with the typical swing for players with similar averages, then tuned until past 80% ranges really did catch about 80% of results. Rebounds, assists, threes, steals, blocks, and turnovers use count odds (negative binomial); points and combos use a smooth curve. Totals and spreads use the market line with an 18-point (total) and 12.5-point (margin) typical miss, nudged 20% toward a pace-and-efficiency model.</p>
       <p><b>Double-doubles.</b> Points, rebounds, and assists are simulated together, since a big-minutes night lifts all three.</p>
-      <p><b>What it doesn't know.</b> Late scratches, minutes limits, and how a teammate's absence changes roles. When a star sits, the others' usage goes up and these numbers will run low. Check the injury report close to tip-off.</p>
+      <p><b>Teammates who are out.</b> When a regular is listed Out (or Doubtful, counted at 75%), his minutes go mostly to teammates at his position who have room to play more, and the scoring, rebounding, and passing those minutes don't cover is spread across the rest. Where a teammate has played games without him, those real numbers are blended in. Changed numbers carry a ▲ or ▼.</p>
+      <p><b>What it doesn't know.</b> Late scratches until the page refreshes, minutes limits, and coaching choices. Check the injury report close to tip-off.</p>
       <p><b>Using it for alt lines.</b> If the model says 80% and Polymarket charges 70¢, that's a possible edge. If it charges 85¢, it isn't. Multiplying many 80% legs drops fast: five of them is about 33%.</p>
     </div>
     ${bt.length ? `<div class="panel"><h3>Track record</h3>

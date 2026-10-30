@@ -230,6 +230,7 @@ async function refreshInjuries() {
     }
   } catch (e) { /* keep the file's injury report */ }
   try { await NOTES.news("football/nfl"); } catch (e) { /* headlines are optional */ }
+  adjustForInjuries();
 }
 
 // reload the data file (rebuilt hourly) and re-check lines, injuries, and headlines
@@ -259,6 +260,7 @@ async function boot() {
   }
   fetch("data/backtest.json", { cache: "no-cache" }).then((r) => r.json()).then((b) => { BACKTEST = b; }).catch(() => {});
   computeRanks();
+  adjustForInjuries();
   const hash = new URLSearchParams(location.hash.slice(1));
   state.week = Number(hash.get("week")) || DATA.week;
   if (!DATA.weeks.includes(state.week)) state.week = DATA.weeks[0];
@@ -352,11 +354,12 @@ function renderGame() {
     </div>
 
     <div class="panel" id="players"></div>
+    <div class="panel" id="spots"></div>
     <div class="panel" id="notes"></div>
     <div class="panel" id="tds"></div>
     <div class="panel" id="finder"></div>
   `;
-  renderTotalTool(g); renderSpreadTool(g); renderPlayers(g); renderNotes(g); renderTds(g); renderFinder(g);
+  renderTotalTool(g); renderSpreadTool(g); renderPlayers(g); renderSpots(g); renderNotes(g); renderTds(g); renderFinder(g);
 }
 
 function lineTool(el, { title, sub, dist, def, min, max, overLabel, underLabel, legLabel }) {
@@ -487,13 +490,13 @@ function renderPlayers(g) {
             const season = p.log.reduce((a, r) => a + r[k], 0) / p.log.length;
             const l3 = last.reduce((a, r) => a + r[k], 0) / last.length;
             const rng = STATS[k].count ? `${pct(1 - poissonCdf(0, d.mean))} for 1+` : `${Math.round(quantile(0.1, d))}–${Math.round(quantile(0.9, d))}`;
-            return `<td title="Season avg ${fmt(season, 1)} · last 3 avg ${fmt(l3, 1)}"><b>${fmt(d.mean, STATS[k].dec)}</b><span class="rng">${rng}</span></td>`;
+            return `<td title="Season avg ${fmt(season, 1)} · last 3 avg ${fmt(l3, 1)}"><b>${fmt(d.mean, STATS[k].dec)}</b>${ROLES.mark(p, g.id, k, STATS[k].dec)}<span class="rng">${rng}</span></td>`;
           }).join("")}
           <td><b>${pct(anyTd(tdLambda(p, g)))}</b></td><td>${p.log.length}</td></tr>`;
       }).join("")}</tbody></table></div>`;
   }).join("");
   el.innerHTML = `
-    <div class="panel-head"><h2>Player projections this game</h2><span class="muted small">Bold = projected average. Small text = 80% range (or chance of 1+ TD). Tap a player for game logs and lines.</span></div>
+    <div class="panel-head"><h2>Player projections this game</h2><span class="muted small">Bold = projected average (▲▼ = changed for a teammate who is out; hover for details). Small text = 80% range (or chance of 1+ TD). Tap a player for game logs and lines.</span></div>
     <div class="tabs">
       ${[g.away, g.home].map((t) => `<button class="chip" data-team="${t}" aria-pressed="${t === state.team}">${esc(DATA.team_names[t])}</button>`).join("")}
       <span style="width:12px"></span>
@@ -505,10 +508,90 @@ function renderPlayers(g) {
   el.querySelectorAll("tr[data-pid]").forEach((tr) => tr.onclick = () => openPlayer(tr.dataset.pid, g));
 }
 
+// ---------------------------------------------------------------- teammate injuries
+
+// Volume stats and the stats that ride on them (yards per carry, catch rate, and yards per
+// target stay the same; there are just more or fewer chances)
+const RIDES = { car: ["car", "ryd", "rtd"], tgt: ["tgt", "rec", "yds", "td"] };
+// a backup QB is usually a bit less efficient than the starter
+const BACKUP_QB = { att: 1, cmp: 0.95, pyd: 0.9, ptd: 0.85, int: 1.15, car: 1, ryd: 1, rtd: 1 };
+
+// When a player is out, his carries go to the other backs and 90% of his targets go to the
+// other receivers (most to the same position, by their current share), and that's blended
+// with how each teammate really did in past games without him. A starting QB out hands his
+// volume to the backup at lower efficiency, and his receivers lose a little.
+function adjustForInjuries() {
+  ROLES.reset(DATA);
+  for (const g of DATA.games) {
+    for (const tm of [g.home, g.away]) {
+      const roster = (g.players[tm] || []).map((pid) => DATA.players[pid]);
+      for (const m of roster) {
+        const w = ROLES.outWeight(m);
+        if (!w) continue;
+        const share = w * ROLES.share(m, tm, roster, "w", g.week, 3);
+        if (share < 0.2) continue;
+        const mp = m.base[g.id], mates = roster.filter((p) => p !== m && !ROLES.outWeight(p));
+        if (m.pos === "QB") {
+          if ((mp.att?.mean || 0) < 15) continue;
+          const backup = mates.filter((p) => p.pos === "QB").sort((a, b) => b.proj[g.id].att.mean - a.proj[g.id].att.mean)[0];
+          if (backup) {
+            for (const [k, eff] of Object.entries(BACKUP_QB)) {
+              const d = backup.proj[g.id][k];
+              if (!d || !mp[k] || mp[k].mean * eff <= d.mean) continue;
+              const target = mp[k].mean * eff;
+              const was = Math.max(d.mean, 0.05 * target);
+              Object.assign(d, { mean: was, sd: mp[k].sd * was / Math.max(mp[k].mean, 1e-6) });
+              ROLES.scale(d, (was + share * (target - was)) / was);
+            }
+            ROLES.because(backup, g.id, m);
+          }
+          for (const p of mates.filter((x) => x.pos !== "QB")) {
+            ROLES.scale(p.proj[g.id].yds, 1 - 0.08 * share); ROLES.scale(p.proj[g.id].td, 1 - 0.12 * share);
+            ROLES.because(p, g.id, m);
+          }
+          continue;
+        }
+        const give = (vol, amount, who, weight) => {
+          const W = who.reduce((a, p) => a + weight(p), 0);
+          if (amount <= 0 || !W) return;
+          for (const p of who) {
+            const d = p.proj[g.id];
+            const r = (d[vol].mean + amount * weight(p) / W) / Math.max(d[vol].mean, 0.1);
+            for (const k of RIDES[vol]) ROLES.scale(d[k], r);
+            ROLES.because(p, g.id, m);
+          }
+        };
+        const before = new Map(mates.map((p) => [p, { car: p.proj[g.id].car?.mean, tgt: p.proj[g.id].tgt?.mean }]));
+        if ((mp.car?.mean || 0) >= 1) {
+          give("car", share * mp.car.mean, mates.filter((p) => p.pos === "RB"), (p) => p.proj[g.id].car.mean + 1);
+        }
+        if ((mp.tgt?.mean || 0) >= 1) {
+          const aff = (p) => (p.pos === m.pos ? 1.5 : p.pos === "RB" || m.pos === "RB" ? 0.6 : 1);
+          give("tgt", 0.9 * share * mp.tgt.mean, mates.filter((p) => p.pos !== "QB"), (p) => (p.proj[g.id].tgt.mean + 0.5) * aff(p));
+        }
+        // real games without him, on the volume he shared with them
+        for (const p of mates) {
+          if (p.pos === "QB") continue;
+          const vol = p.pos === "RB" && m.pos === "RB" ? "car" : p.pos !== "RB" && m.pos !== "RB" ? "tgt" : null;
+          const d = p.proj[g.id], b0 = before.get(p)[vol];
+          if (!vol || !(b0 > 0.5)) continue;
+          const rm = d[vol].mean / b0, r = ROLES.blend(p, m, (x) => x[vol], "w", rm);
+          if (Math.abs(r - rm) > 1e-6) { for (const k of RIDES[vol]) ROLES.scale(d[k], Math.max(0.6, r / rm)); ROLES.because(p, g.id, m); }
+        }
+        for (const vol of ["car", "tgt"]) {
+          const who = mates.filter((p) => p.proj[g.id][vol]);
+          ROLES.cap(who, who.map((p) => before.get(p)[vol]), share * (mp[vol]?.mean || 0), (p) => p.proj[g.id][vol].mean,
+            (p, r) => { for (const k of RIDES[vol]) ROLES.scale(p.proj[g.id][k], r); });
+        }
+      }
+    }
+  }
+}
+
 // ---------------------------------------------------------------- player notes
 
-// Reasons a player may have a good or bad game. Matchup is already in the projections;
-// injuries to teammates and streaks are flagged here but not built in.
+// Reasons a player may have a good or bad game. Matchup and teammates who are out are
+// already in the projections; streaks are flagged here but not built in.
 function playerNotes(p, g) {
   const out = [], pr = p.proj[g.id], opp = p.team === g.home ? g.away : g.home;
   if (p.inj?.status) {
@@ -538,9 +621,13 @@ function playerNotes(p, g) {
     const sp = NOTES.without(p, m, (r) => r[share], "w");
     if (sp && Math.abs(sp.without - sp.with) >= 1.5) {
       out.push({ kind: sp.without > sp.with ? "good" : "bad", text: `Without ${m.name} (out): ${fmt(sp.without, 1)} ${STATS[share].short.toLowerCase()} a game in ${sp.n} vs ${fmt(sp.with, 1)} with him` });
-    } else if (volume(p, g) >= 6) {
-      out.push({ kind: "info", text: `${m.name} (${m.pos}) is out, so more ${share === "car" ? "carries" : "targets"} to go around` });
     }
+  }
+  const dk = p.pos === "QB" ? "att" : (pr.car?.mean || 0) > (pr.tgt?.mean || 0) ? "car" : "tgt";
+  const dv = ROLES.delta(p, g.id, dk), dy = ROLES.delta(p, g.id, MAIN_STAT[p.pos]);
+  if (dv || dy) {
+    const b = p.base[g.id];
+    out.push({ kind: (dv || dy) > 0 ? "good" : "bad", text: `Projection ${(dv || dy) > 0 ? "up" : "down"} for ${p.why[g.id].join(", ")} out: ${fmt(b[dk].mean, 1)} → ${fmt(pr[dk].mean, 1)} ${STATS[dk].short.toLowerCase()}, ${Math.round(b[MAIN_STAT[p.pos]].mean)} → ${Math.round(pr[MAIN_STAT[p.pos]].mean)} ${STATS[MAIN_STAT[p.pos]].short.toLowerCase()}` });
   }
   for (const n of NOTES.newsFor(p.name).slice(0, 2)) out.push({ kind: "info", text: `News: ${n.headline}` });
   return out;
@@ -566,6 +653,29 @@ function renderNotes(g) {
     ["r/sportsbook", "https://www.reddit.com/r/sportsbook/"],
   ]);
   $("#notes").querySelectorAll(".note-row[data-pid]:not([data-pid=''])").forEach((r) => r.onclick = () => openPlayer(r.dataset.pid, g));
+}
+
+// ---------------------------------------------------------------- best spots
+
+// Featured yardage and volume props (not touchdowns), measured against this season's games
+function renderSpots(g) {
+  const cand = [];
+  for (const tm of [g.away, g.home]) {
+    for (const p of playerRows(g, tm)) {
+      if (ROLES.outWeight(p) || volume(p, g) < (p.pos === "QB" ? 20 : 4)) continue;
+      const games = p.log.filter((r) => r.w < g.week);
+      for (const k of FEATURED[p.pos]) {
+        const d = p.proj[g.id][k], vals = games.map((r) => r[k]);
+        if (!d || STATS[k].count || avg(vals) < (/yd|yds/.test(k) ? 15 : 1.5)) continue;
+        cand.push({ p, pid: p.pid, gid: g.id, k, d, vals, label: STATS[k].label, tag: `${p.team} ${p.pos}`, st: stability(vals) });
+      }
+    }
+  }
+  ROLES.spotsPanel($("#spots"), ROLES.spots(cand), {
+    dec: (k) => STATS[k].dec,
+    onAdd: (it) => addLeg({ label: `${it.p.name} over ${it.line} ${it.label.toLowerCase()}`, p: it.over, game: g.id }),
+  });
+  $("#spots").querySelectorAll("tr[data-pid]").forEach((tr) => tr.onclick = () => openPlayer(tr.dataset.pid, g));
 }
 
 // ---------------------------------------------------------------- alt-line finder
@@ -618,7 +728,7 @@ function renderFinder(g) {
         <td><span class="stab ${it.st.cls}">${it.st.label}</span></td>
         <td><button class="btn add" data-i="${i}">+ Slip</button></td></tr>`).join("")}</tbody>
     </table></div>
-    <div class="note">"Hit this season" counts past games that would have cleared the line. Ranges assume normal playing time; check the injury report before betting.</div>`;
+    <div class="note">"Hit this season" counts past games that would have cleared the line. Teammates listed Out or Doubtful are built in; a late scratch isn't until the page refreshes.</div>`;
   el.querySelectorAll("[data-side]").forEach((b) => b.onclick = () => { state.side = b.dataset.side; renderFinder(g); });
   el.querySelectorAll("[data-conf]").forEach((b) => b.onclick = () => { state.conf = Number(b.dataset.conf); renderFinder(g); });
   el.querySelectorAll("[data-i]").forEach((b) => b.onclick = () => {
@@ -872,7 +982,8 @@ function openHow() {
       <p><b>Game script.</b> The betting spread and total tell us how many points each team should score and who is likely to be trailing. Trailing teams throw more, leading teams run more. That shifts pass attempts, carries, and targets.</p>
       <p><b>Matchup.</b> Yardage gets scaled by how many yards the opponent allows per pass, per carry, and per target to that position (WR, TE, RB), compared to the league. Small samples are pulled toward average so one blowout doesn't swing things too far. Touchdowns scale with the team's implied points, blended with the league TD rate so a player who hasn't scored yet still has a real chance.</p>
       <p><b>Ranges.</b> Each player's own game-to-game swing, blended with the typical swing for that position, then widened until past weeks' 80% ranges really did catch about 80% of results. Touchdowns and interceptions use count odds (Poisson). Totals and spreads use the market line with a 13-point typical miss, nudged 20% toward a stats-only score model.</p>
-      <p><b>What it doesn't know.</b> Injuries during the week, weather beyond what's listed, coaching changes, and snap-count news. A player listed Questionable could be on a snap limit.</p>
+      <p><b>Teammates who are out.</b> When a player is listed Out (or Doubtful, counted at 75%), his carries go to the other backs and most of his targets to the other receivers, weighted toward his position. A starting QB out hands his volume to the backup at lower efficiency. Where a teammate has played games without him, those real numbers are blended in. Changed numbers carry a ▲ or ▼.</p>
+      <p><b>What it doesn't know.</b> Injuries during the week until the page refreshes, weather beyond what's listed, coaching changes, and snap-count news. A player listed Questionable could be on a snap limit.</p>
       <p><b>Using it for alt lines.</b> If the model says 80% and Polymarket charges 70¢, that's a possible edge. If it charges 85¢, it isn't. Multiplying many 80% legs drops fast: five of them is about 33%.</p>
     </div>
     ${bt.length ? `<div class="panel"><h3>Track record this season</h3>
