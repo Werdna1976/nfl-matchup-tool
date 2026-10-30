@@ -37,12 +37,15 @@ BASE = {"min": "minutes", "pts": "points", "reb": "rebounds", "ast": "assists",
         "fg3": "three_point_field_goals_made", "stl": "steals", "blk": "blocks", "tov": "turnovers"}
 COMBOS = {"pra": ("pts", "reb", "ast"), "pr": ("pts", "reb"), "pa": ("pts", "ast"),
           "ra": ("reb", "ast"), "sb": ("stl", "blk")}
-RATE_STATS = ["pts", "reb", "ast", "fg3", "stl", "blk", "tov"]
-PROPS = ["pts", "reb", "ast", "fg3", "pra", "pr", "pa", "ra", "stl", "blk", "sb", "tov"]
-DISCRETE = {"reb", "ast", "fg3", "stl", "blk", "tov", "ra", "sb"}   # small counts: negative binomial
+# shot volume, worked out from the box score: 2-pointers are field goals minus 3-pointers
+SHOTS = ["fg3a", "fg2", "fg2a"]
+RATE_STATS = ["pts", "reb", "ast", "fg3", "stl", "blk", "tov", *SHOTS]
+PROPS = ["pts", "reb", "ast", "fg3", "pra", "pr", "pa", "ra", "stl", "blk", "sb", "tov", *SHOTS]
+DISCRETE = {"reb", "ast", "fg3", "stl", "blk", "tov", "ra", "sb", *SHOTS}   # small counts: negative binomial
 LABELS = {"min": "Minutes", "pts": "Points", "reb": "Rebounds", "ast": "Assists", "fg3": "3-pointers made",
           "pra": "Pts + Reb + Ast", "pr": "Pts + Reb", "pa": "Pts + Ast", "ra": "Reb + Ast",
-          "stl": "Steals", "blk": "Blocks", "sb": "Steals + Blocks", "tov": "Turnovers"}
+          "stl": "Steals", "blk": "Blocks", "sb": "Steals + Blocks", "tov": "Turnovers",
+          "fg3a": "3-point attempts", "fg2": "2-pointers made", "fg2a": "2-point attempts"}
 
 TOTAL_SD = 18.0    # NBA totals land within about +/-18 points of the closing line 2/3 of the time
 MARGIN_SD = 12.5   # same idea for the final margin
@@ -84,7 +87,9 @@ def _norm_box(df):
     })
     for k, col in BASE.items():
         out[k] = pd.to_numeric(df[col], errors="coerce")
-    num = ["fga", "fta", "oreb", "fg3a", *BASE]
+    out["fg2"] = pd.to_numeric(df.field_goals_made, errors="coerce") - out["fg3"]
+    out["fg2a"] = pd.to_numeric(out["fga"], errors="coerce") - pd.to_numeric(out["fg3a"], errors="coerce")
+    num = ["fga", "fta", "oreb", "fg3a", "fg2", "fg2a", *BASE]
     out[num] = out[num].fillna(0).astype(float)
     out["played"] = (out["min"] > 0) & ~df.did_not_play.fillna(False).astype(bool)
     return out
@@ -98,7 +103,7 @@ def load_box(season):
         return _norm_box(pd.DataFrame(columns=["game_id", "game_date", "season", "season_type", "athlete_id",
                                                "athlete_display_name", "athlete_position_abbreviation",
                                                "athlete_headshot_href", "team_abbreviation",
-                                               "opponent_team_abbreviation", "home_away", "did_not_play", "starter",
+                                               "opponent_team_abbreviation", "home_away", "did_not_play", "starter", "field_goals_made",
                                                "field_goals_attempted", "free_throws_attempted",
                                                "offensive_rebounds", "three_point_field_goals_attempted",
                                                *BASE.values()]))
@@ -172,6 +177,8 @@ def espn_box(gid):
                  "stl": num("steals"), "blk": num("blocks"), "tov": num("turnovers"),
                  "fga": num("fieldGoalsMade-fieldGoalsAttempted", 1), "fta": num("freeThrowsMade-freeThrowsAttempted", 1),
                  "oreb": num("offensiveRebounds")}
+            r["fg2"] = num("fieldGoalsMade-fieldGoalsAttempted", 0) - r["fg3"]
+            r["fg2a"] = r["fga"] - r["fg3a"]
             r["played"] = r["min"] > 0 and not a.get("didNotPlay", False)
             r["starter"] = bool(a.get("starter", False))
             rows.append(r)
@@ -464,7 +471,8 @@ def project_player(cur, prev, f_opp, gs, priors, calib=None):
         minutes *= max(0.93, 1 - 0.005 * (abs(gs["margin"]) - 9))
 
     factor = {"pts": gs["pts_f"], "reb": gs["pace_f"] * f_opp["f_reb"], "ast": gs["pace_f"] * f_opp["f_ast"],
-              "fg3": gs["pace_f"] * f_opp["f_fg3"], "stl": gs["pace_f"], "blk": gs["pace_f"], "tov": gs["pace_f"]}
+              "fg3": gs["pace_f"] * f_opp["f_fg3"], "stl": gs["pace_f"], "blk": gs["pace_f"], "tov": gs["pace_f"],
+              "fg3a": gs["pace_f"] * f_opp["f_fg3"], "fg2": gs["pts_f"], "fg2a": gs["pace_f"]}
     means, fs = {"min": minutes}, {"min": 1.0}
     for k in RATE_STATS:
         r_cur = None
@@ -584,7 +592,7 @@ def rescale(proj, r):
 
 def player_index(box):
     """{pid: [game dicts oldest first]} for played games."""
-    cols = ["gid", "date", "season", "tm", "opp", "home", "starter", *BASE]
+    cols = ["gid", "date", "season", "tm", "opp", "home", "starter", *BASE, *SHOTS]
     p = box[box.played].sort_values(["date", "gid"])
     return {pid: g[cols].to_dict("records") for pid, g in p.groupby("pid")}
 
@@ -854,7 +862,7 @@ def build(today, run_backtest=True):
         for season_games, ly in ((idx_prev.get(pid, []), 1), (idx_cur.get(pid, []), 0)):
             for x in season_games:
                 row = {"d": x["date"], "opp": x["opp"], "tm": x["tm"], "h": int(bool(x["home"]))}
-                row.update({k: int(round(x[k])) for k in BASE})
+                row.update({k: int(round(x[k])) for k in (*BASE, *SHOTS)})
                 if x.get("starter"):
                     row["s"] = 1
                 if ly:
