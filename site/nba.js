@@ -10,6 +10,9 @@ const STATS = {
   reb: { label: "Rebounds", short: "Reb", dec: 1 },
   ast: { label: "Assists", short: "Ast", dec: 1 },
   fg3: { label: "3-pointers made", short: "3PM", dec: 1 },
+  fg3a: { label: "3-point attempts", short: "3PA", dec: 1 },
+  fg2: { label: "2-pointers made", short: "2PM", dec: 1 },
+  fg2a: { label: "2-point attempts", short: "2PA", dec: 1 },
   pra: { label: "Pts + Reb + Ast", short: "PRA", dec: 1, parts: ["pts", "reb", "ast"] },
   pr: { label: "Pts + Reb", short: "P+R", dec: 1, parts: ["pts", "reb"] },
   pa: { label: "Pts + Ast", short: "P+A", dec: 1, parts: ["pts", "ast"] },
@@ -19,8 +22,8 @@ const STATS = {
   sb: { label: "Steals + Blocks", short: "S+B", dec: 1, parts: ["stl", "blk"] },
   tov: { label: "Turnovers", short: "TO", dec: 1 },
 };
-const TABLE_KEYS = ["min", "pts", "reb", "ast", "fg3", "pra", "stl", "blk"];
-const ALL_KEYS = ["min", "pts", "reb", "ast", "fg3", "pra", "pr", "pa", "ra", "stl", "blk", "sb", "tov"];
+const TABLE_KEYS = ["min", "pts", "reb", "ast", "fg3", "fg3a", "fg2", "fg2a", "pra", "stl", "blk"];
+const ALL_KEYS = ["min", "pts", "reb", "ast", "fg3", "fg3a", "fg2", "fg2a", "pra", "pr", "pa", "ra", "stl", "blk", "sb", "tov"];
 const PROP_KEYS = ALL_KEYS.filter((k) => k !== "min");
 // the props worth betting, for the alt-line finder
 const FEATURED = ["pts", "reb", "ast", "fg3", "pra"];
@@ -525,6 +528,7 @@ function renderPlayers(g) {
         return `<tr class="click" data-pid="${p.pid}"><td><span class="pname">${esc(p.name)}</span><span class="pos-tag">${esc(p.pos)}</span>${roleTags(p, g)}${injBadge(p)}</td>
           ${TABLE_KEYS.map((k) => {
             const d = pr[k];
+            if (!d) return `<td>–</td>`;
             return `<td title="This season avg ${fmt(avg(cur.map((r) => val(r, k))), 1)} · last 5 avg ${fmt(avg(last5.map((r) => val(r, k))), 1)}"><b>${fmt(d.mean, STATS[k].dec)}</b>${ROLES.mark(p, g.id, k, STATS[k].dec)}<span class="rng">${rangeTxt(d)}</span></td>`;
           }).join("")}
           <td>${pct(multi(p.pid, g).dd)}</td><td>${cur.length}</td></tr>`;
@@ -535,7 +539,7 @@ function renderPlayers(g) {
 
 // ---------------------------------------------------------------- teammate injuries
 
-const RATE_KEYS = ["pts", "reb", "ast", "fg3", "stl", "blk", "tov"];
+const RATE_KEYS = ["pts", "reb", "ast", "fg3", "stl", "blk", "tov", "fg3a", "fg2", "fg2a"];
 const COMBO_KEYS = ALL_KEYS.filter((k) => STATS[k].parts);
 const posGroup = (pos) => (/C/.test(pos || "") ? 2 : /F/.test(pos || "") ? 1 : 0);   // guard, forward, center
 

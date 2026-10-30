@@ -16,6 +16,7 @@ Built for picking alt lines and parlay legs on Polymarket.
 
 - **Games**: spread, total, and moneyline for this week and next, plus a projected score.
 - **Total points and spread tools**: slide to any line to see the model's chance of over/under or cover with the fair price in cents.
+- **NBA shot volume**: 3-point attempts, 2-pointers made, and 2-point attempts, projected from minutes like every other stat.
 - **NBA minutes that add up**: projected starters from recent lineups, starter and bench minutes estimated separately, and each team's expected minutes fitted to 240. This season counts far more than last; players whose minutes changed a lot from last season are flagged.
 - **Teammate injuries built in**: when a player is Out or Doubtful, his minutes (NBA) or carries and targets (NFL) are handed to teammates, blended with how they did in past games without him.
 - **Best spots**: props where the projection sits well above the player's usual line (upside) or a steady player should clear it (safe floor).
@@ -34,6 +35,7 @@ Built for picking alt lines and parlay legs on Polymarket.
 
 - **Game days**: today, tomorrow, and the next game day, with spread, total, moneyline, and projected score.
 - **Total points and spread tools**: same sliders as the NFL page.
+- **NBA shot volume**: 3-point attempts, 2-pointers made, and 2-point attempts, projected from minutes like every other stat.
 - **NBA minutes that add up**: projected starters from recent lineups, starter and bench minutes estimated separately, and each team's expected minutes fitted to 240. This season counts far more than last; players whose minutes changed a lot from last season are flagged.
 - **Teammate injuries built in**: when a player is Out or Doubtful, his minutes (NBA) or carries and targets (NFL) are handed to teammates, blended with how they did in past games without him.
 - **Best spots**: props where the projection sits well above the player's usual line (upside) or a steady player should clear it (safe floor).
