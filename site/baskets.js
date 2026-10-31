@@ -20,7 +20,10 @@ const BASKETS = (() => {
   const MIN_NET = 4;                 // only baskets that pay more than 4x profit (5x back per $1)
   const N = 6000;                    // simulated games per matchup
   const WIDE = 0.05;                 // bid-ask gap (in dollars per share) that counts as wide
-  const THIN_LIQ = 1000, THIN_USD = 50;
+  // Andrew bets $10-20 a basket, so every leg must take $20 without paying more than 2¢ over
+  // the best ask; anything thinner is left out, not just flagged. Without the order book, a
+  // market needs $1,000 of liquidity to count.
+  const STAKE = 20, MAX_SLIP = 0.02, MIN_LIQ = 1000;
   const CACHE_MS = 90 * 1000;        // reuse a pull for 90 seconds while clicking around
   const SHOWN = 6;                   // baskets per game: both "runs away" stories plus the best four others
   const MIN_LEG_P = 0.4, MIN_PRICE = 0.3;   // no longshot legs: the model and the market both give it a real chance
@@ -191,8 +194,11 @@ const BASKETS = (() => {
           const asks = (b.asks || []).map((l) => ({ p: Number(l.price), s: Number(l.size) })).filter((l) => l.p > 0 && l.s > 0).sort((x, y) => x.p - y.p);
           const bids = (b.bids || []).map((l) => ({ p: Number(l.price), s: Number(l.size) })).filter((l) => l.p > 0 && l.s > 0).sort((x, y) => y.p - x.p);
           if (!asks.length) return null;
-          const usd = asks.filter((l) => l.p <= asks[0].p + 0.02).reduce((a, l) => a + l.p * l.s, 0);
-          return { ask: asks[0].p, bid: bids[0]?.p ?? null, usd, book: true };
+          // average price paid for $STAKE, walking up the book
+          let left = STAKE, shares = 0;
+          for (const l of asks) { if (left <= 0 || l.p > asks[0].p + MAX_SLIP) break; const take = Math.min(left, l.p * l.s); shares += take / l.p; left -= take; }
+          const usd = asks.filter((l) => l.p <= asks[0].p + MAX_SLIP).reduce((a, l) => a + l.p * l.s, 0);
+          return { ask: asks[0].p, bid: bids[0]?.p ?? null, usd, fill: left <= 1e-9 ? STAKE / shares : null, book: true };
         }
         if (m.bestAsk == null || m.bestBid == null) return null;
         return i === 0 ? { ask: m.bestAsk, bid: m.bestBid, usd: null, book: false }
@@ -251,11 +257,14 @@ const BASKETS = (() => {
         if (!qt || !(qt.ask > 0.01 && qt.ask < 0.99)) return;
         const leg = modelLeg(A, g, m.kind, { pid: m.pid, key: m.key, line: m.kind === "spread" ? m.lines[i] : m.line, side });
         if (!leg) return;
-        const price = Math.min(0.995, qt.ask + m.fee * Math.min(qt.ask, 1 - qt.ask));
+        // too thin to take a $20 bet near the ask: leave it out
+        if (qt.book ? qt.fill == null : m.liq < MIN_LIQ) return;
+        const pay = qt.book ? qt.fill : qt.ask;
+        const price = Math.min(0.995, pay + m.fee * Math.min(pay, 1 - pay));
         const flags = [];
+        if (qt.book && pay - qt.ask >= 0.005) flags.push(`$${STAKE} fills at ${Math.round(pay * 100)}¢`);
         if (qt.bid == null) flags.push("no bids");
         else if (qt.ask - qt.bid >= WIDE) flags.push(`wide ${Math.round(qt.bid * 100)}/${Math.round(qt.ask * 100)}¢`);
-        if (qt.usd != null ? qt.usd < THIN_USD : m.liq < THIN_LIQ) flags.push(qt.usd != null ? `thin: $${Math.round(qt.usd)} for sale` : "thin");
         legs.push({ ...leg, grp: group(leg), price, ask: qt.ask, bid: qt.bid, usd: qt.usd, flags, url: m.url, edge: leg.p - price });
       });
     }
@@ -504,7 +513,8 @@ const BASKETS = (() => {
     const all = stories(A, g).filter((s) => priced || !s.priced);
     const firstOf = (list) => { for (const loose of [false, true]) { const b = list.map((s) => best(s, legs, priced, loose)).filter(Boolean); if (b.length) return b; } return []; };
     // the two "runs away" baskets come first, at looser limits only if they must
-    const shown = all.filter((s) => s.base).flatMap((s) => firstOf([s]));
+    // if Polymarket has no market deep enough to build one, it still gets a card that says so
+    const shown = all.filter((s) => s.base).map((s) => firstOf([s])[0] || { ...s, empty: true, legs: [] });
     const repeats = (b) => shown.some((o) => b.legs.filter((l) => o.legs.includes(l)).length >= Math.min(3, b.legs.length));
     for (const loose of [false, true]) {
       const got = all.filter((s) => !s.base && !shown.some((b) => b.id === s.id)).map((s) => best(s, legs, priced, loose)).filter(Boolean);
@@ -516,6 +526,7 @@ const BASKETS = (() => {
     }
     return shown;
   }
+  const realCount = (bs) => bs.filter((b) => !b.empty).length;
 
   // ---------------------------------------------------------------- panel
 
@@ -539,7 +550,7 @@ const BASKETS = (() => {
     const baskets = pickSix(A, g, legs, priced);
     el.innerHTML = head(status) + (baskets.length
       ? `<div class="baskets">${baskets.map((b) => card(b, priced)).join("")}</div>`
-      : "") + (baskets.length < SHOWN ? `<div class="note">Only ${baskets.length} of 6 storylines could be built here without longshot legs or stacked bets while still paying more than 4x net${priced ? " with the markets Polymarket lists for this game" : ""}.</div>` : "") + foot(priced);
+      : "") + (realCount(baskets) < SHOWN ? `<div class="note">Only ${realCount(baskets)} of 6 storylines could be built here without longshot legs, stacked bets${priced ? ", or markets too thin for a $" + STAKE + " bet" : ""} while still paying more than 4x net.</div>` : "") + foot(priced);
   }
 
   function head(status) {
@@ -547,6 +558,11 @@ const BASKETS = (() => {
   }
 
   function card(b, priced) {
+    if (b.empty) return `
+      <div class="basket">
+        <div class="basket-head"><b>${esc(b.title)}</b></div>
+        <div class="muted small">Can't build this one right now: Polymarket has no market on this team winning (moneyline, or covering while giving points) that is deep enough for a $${STAKE} bet, or none that combines with its players' props to pay more than 4x without longshots.</div>
+      </div>`;
     const lift = b.pj / b.prod;
     const legRows = b.legs.map((l) => `
       <tr>
@@ -556,10 +572,10 @@ const BASKETS = (() => {
         <td class="${l.edge >= 0 ? "edge-good" : "edge-bad"}">${l.edge >= 0 ? "+" : "−"}${Math.abs(Math.round(l.edge * 100))}</td>` : `<td class="muted">${l.kind === "player" ? "model main line" : "market line"}</td>`}
       </tr>`).join("");
     const summary = priced
-      ? `Pays <b>${xs(b.pay)}</b> per $1 (net <b>+${xs(b.pay - 1)}</b>) at the asks · model chance <b>${pct(b.pj)}</b>${Math.abs(lift - 1) > 0.05 ? ` <span class="muted">(${pct(b.prod)} if the legs were unrelated)</span>` : ""}
+      ? `Pays <b>${xs(b.pay)}</b> per $1 (net <b>+${xs(b.pay - 1)}</b>) at $20 fill prices · model chance <b>${pct(b.pj)}</b>${Math.abs(lift - 1) > 0.05 ? ` <span class="muted">(${pct(b.prod)} if the legs were unrelated)</span>` : ""}
          · expected return <b class="${b.ev >= 0 ? "edge-good" : "edge-bad"}">${b.ev >= 0 ? "+" : "−"}${Math.abs(Math.round(b.ev * 100))}%</b>`
       : `Model chance <b>${pct(b.pj)}</b>${Math.abs(lift - 1) > 0.05 ? ` <span class="muted">(${pct(b.prod)} if unrelated)</span>` : ""} · break-even payout <b>${xs(1 / b.pj)}</b>: worth it only if Polymarket pays more than that`;
-    const warn = priced && b.legs.some((l) => l.flags.length) ? `<div class="note">Some legs are thinly traded or have a wide bid/ask gap. The price shown is the ask; buying more than what's for sale pushes it higher.</div>` : "";
+    const warn = priced && b.legs.some((l) => l.flags.length) ? `<div class="note">Some legs have a wide bid/ask gap or need to climb the order book a little to fill $20; the price shown is what $20 would really cost.</div>` : "";
     return `
       <div class="basket ${priced ? (b.ev >= 0 ? "good" : "bad") : ""}">
         <div class="basket-head"><b>${esc(b.title)}</b>${priced && b.ev < 0 ? ` <span class="badge out">Overpriced</span>` : ""}${b.pj < MIN_JOINT ? ` <span class="badge q" title="Shown because both 'runs away' stories always appear, but this team is a big underdog">Long shot</span>` : ""}</div>
@@ -573,7 +589,7 @@ const BASKETS = (() => {
   }
 
   function foot(priced) {
-    return `<div class="note">${priced ? "Payout assumes you buy every leg at today's ask; if Polymarket's parlay builder quotes a different price for the combo, use that. " : ""}Baskets paying 5x back or more hit 20% of the time or less, even when they're good bets: size them small.
+    return `<div class="note">${priced ? "Every leg can take a $20 bet within 2¢ of its best price (thinner markets are left out), and payout uses what $20 would really cost; if Polymarket's parlay builder quotes a different price for the combo, use that. " : ""}Baskets paying 5x back or more hit 20% of the time or less, even when they're good bets: size them small.
       The legs here are chosen to move together, which is the point of a storyline, but how strongly they move together is the model's estimate, not something it has been tested on yet.
       Every basket includes at least one bet on the game itself, uses one leg per player, one bet on the winner (spread or moneyline), and one total, and skips legs the model or the market gives under about a 40% chance. Players ruled Out or Doubtful are never used; Questionable ones are marked.</div>`;
   }
