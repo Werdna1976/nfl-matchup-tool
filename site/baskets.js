@@ -24,11 +24,16 @@ const BASKETS = (() => {
   // the best ask; anything thinner is left out, not just flagged. Without the order book, a
   // market needs $1,000 of liquidity to count.
   const STAKE = 20, MAX_SLIP = 0.02, MIN_LIQ = 1000;
+  // A real, tradeable price: bid and ask no more than 10¢ apart, within 5¢ of the price Polymarket
+  // shows on its site, and under 90¢ (dearer legs add almost nothing to a basket's payout).
+  // Empty markets sit at a 1¢ bid and a 97-99¢ ask, which are placeholders, not prices.
+  const MAX_GAP = 0.1, MAX_OFF_SHOWN = 0.05, MAX_PRICE = 0.9;
+  const REPRICE_MS = 2 * 60 * 1000;   // re-pull prices every 2 minutes while the page is open
   const CACHE_MS = 90 * 1000;        // reuse a pull for 90 seconds while clicking around
   const SHOWN = 6;                   // baskets per game: both "runs away" stories plus the best four others
   const MIN_LEG_P = 0.4, MIN_PRICE = 0.3;   // no longshot legs: the model and the market both give it a real chance
   const MIN_JOINT = 0.12;            // and no basket the model gives less than a 12% chance (about 1 in 8)
-  const SAVE_KEY = "pmBasketQuotes", SAVE_MAX_MS = 6 * 3600 * 1000;
+  const SAVE_KEY = "pmBasketQuotes", SAVE_MAX_MS = 15 * 60 * 1000;   // prices move fast: an older saved copy is useless
 
   // ---------------------------------------------------------------- small helpers
 
@@ -60,6 +65,7 @@ const BASKETS = (() => {
   function pullWindow(A, g) {
     const day = A.gameDay(g), first = addDays(day, -A.daysBefore), today = etDay(Date.now());
     if (A.isPost(g)) return { open: false, why: "This game is over, so there's nothing left to bet." };
+    if (A.isLive(g)) return { open: false, why: "This game is under way. Polymarket's prices now move with the score, and the model is pre-game, so prices aren't pulled." };
     if (today < first) return { open: false, why: `Polymarket prices are pulled ${A.daysBefore ? "from the day before kickoff" : "on game day"}, starting ${niceDay(first)}.` };
     return { open: true };
   }
@@ -83,7 +89,9 @@ const BASKETS = (() => {
     const day = A.gameDay(g), slug = String(e.slug || "").toLowerCase(), parts = slug.split("-");
     const when = [e.startTime, e.eventDate, ...(e.markets || []).slice(0, 3).map((m) => m.gameStartTime)]
       .map((t) => (t ? Date.parse(String(t).replace(" ", "T")) : NaN)).filter((t) => !isNaN(t));
-    const dayOk = slug.includes(day) || when.some((t) => Math.abs(t - A.kickoff(g)) < 30 * 3600 * 1000);
+    // a dated slug must carry this game's date (teams can meet on back-to-back nights);
+    // otherwise the start time must be within 6 hours of tip-off or kickoff
+    const dayOk = /\d{4}-\d{2}-\d{2}/.test(slug) ? slug.includes(day) : when.some((t) => Math.abs(t - A.kickoff(g)) < 6 * 3600 * 1000);
     const title = squash(`${e.title || ""} ${e.ticker || ""}`);
     const teamOk = (tm) => A.nicknames(tm).some((n) => title.includes(n)) || A.codes(tm).some((c) => parts.includes(c));
     return dayOk && teamOk(g.away) && teamOk(g.home);
@@ -121,14 +129,18 @@ const BASKETS = (() => {
     const type = squash(m.sportsMarketType), q = String(m.question || m.groupItemTitle || "");
     let line = num(m.line);
     const base = {
-      id: String(m.id), q, tokens, outcomes, bestBid: num(m.bestBid), bestAsk: num(m.bestAsk),
+      id: String(m.id), q, tokens, outcomes, shown: arr(m.outcomePrices).map(num), bestBid: num(m.bestBid), bestAsk: num(m.bestAsk),
       liq: num(m.liquidityNum ?? m.liquidity) || 0, vol: num(m.volumeNum ?? m.volume) || 0,
       fee: m.feesEnabled ? (num(m.feeSchedule?.rate) ?? (num(m.takerBaseFee) || 0) / 10000) : 0,
     };
+    // Polymarket's game markets for the full game are exactly these three types. First-half,
+    // quarter, race-to-points and similar markets are left out so they can't pass for them.
+    const GAME_TYPES = { totals: "total", spreads: "spread", moneyline: "ml" };
+    if (!GAME_TYPES[type] && /spread|total|moneyline|half|quarter|race|overtime|oddeven|first|period/.test(type)) return null;
     const ouSide = (o) => (/^(over|yes)$/i.test(o) ? "over" : /^(under|no)$/i.test(o) ? "under" : null);
 
     // game total
-    if (/total/.test(type) && !q.includes(":") || /^(totals?|gametotal)$/.test(type)) {
+    if (type === "totals") {
       if (line == null) { const mm = /(\d+(?:\.\d+)?)/.exec(q); line = mm ? Number(mm[1]) : null; }
       const sides = outcomes.map(ouSide);
       if (line == null || !sides[0] || !sides[1]) return null;
@@ -136,7 +148,7 @@ const BASKETS = (() => {
     }
     const teamOf = (s) => [g.away, g.home].find((tm) => A.nicknames(tm).some((n) => squash(s).includes(n)) || A.codes(tm).includes(squash(s)));
     // spread: "Spread: Lakers (-5.5)", outcomes are the two teams
-    if (/spread/.test(type)) {
+    if (type === "spreads") {
       const sides = outcomes.map(teamOf);
       if (!sides[0] || !sides[1] || sides[0] === sides[1]) return null;
       const mm = /\(([+-]?\d+(?:\.\d+)?)\)/.exec(q);
@@ -147,7 +159,7 @@ const BASKETS = (() => {
       const lines = sides.map((tm) => (tm === lineTeam ? L : -L));
       return { ...base, kind: "spread", sides, lines };
     }
-    if (/moneyline|^ml$|winner/.test(type)) {
+    if (type === "moneyline") {
       const sides = outcomes.map(teamOf);
       if (!sides[0] || !sides[1] || sides[0] === sides[1]) return null;
       return { ...base, kind: "ml", sides };
@@ -190,22 +202,33 @@ const BASKETS = (() => {
     for (const m of markets) {
       m.quotes = m.tokens.map((tok, i) => {
         const b = books[String(tok)];
-        if (b) {
-          const asks = (b.asks || []).map((l) => ({ p: Number(l.price), s: Number(l.size) })).filter((l) => l.p > 0 && l.s > 0).sort((x, y) => x.p - y.p);
-          const bids = (b.bids || []).map((l) => ({ p: Number(l.price), s: Number(l.size) })).filter((l) => l.p > 0 && l.s > 0).sort((x, y) => y.p - x.p);
-          if (!asks.length) return null;
-          // average price paid for $STAKE, walking up the book
-          let left = STAKE, shares = 0;
-          for (const l of asks) { if (left <= 0 || l.p > asks[0].p + MAX_SLIP) break; const take = Math.min(left, l.p * l.s); shares += take / l.p; left -= take; }
-          const usd = asks.filter((l) => l.p <= asks[0].p + MAX_SLIP).reduce((a, l) => a + l.p * l.s, 0);
-          return { ask: asks[0].p, bid: bids[0]?.p ?? null, usd, fill: left <= 1e-9 ? STAKE / shares : null, book: true };
+        // Polymarket's own summary of the best prices, the numbers its site shows
+        const sum = m.bestAsk == null || m.bestBid == null ? null
+          : i === 0 ? { ask: m.bestAsk, bid: m.bestBid } : { ask: 1 - m.bestBid, bid: 1 - m.bestAsk };
+        const q = fromBook(b);
+        if (q && sum) {
+          // the order book and the summary should agree; if they don't, don't trust either
+          q.check = Math.abs(q.ask - sum.ask) <= 0.02 ? "ok" : "mismatch";
+          q.sumAsk = sum.ask;
+          return q;
         }
-        if (m.bestAsk == null || m.bestBid == null) return null;
-        return i === 0 ? { ask: m.bestAsk, bid: m.bestBid, usd: null, book: false }
-          : { ask: 1 - m.bestBid, bid: 1 - m.bestAsk, usd: null, book: false };
+        if (q) return q;
+        return sum ? { ...sum, usd: null, book: false, check: "summary" } : null;
       });
     }
     return Object.keys(books).length > 0;
+  }
+
+  // best ask and bid from one token's order book, plus the average price a $STAKE bet would pay
+  function fromBook(b) {
+    if (!b) return null;
+    const asks = (b.asks || []).map((l) => ({ p: Number(l.price), s: Number(l.size) })).filter((l) => l.p > 0 && l.s > 0).sort((x, y) => x.p - y.p);
+    const bids = (b.bids || []).map((l) => ({ p: Number(l.price), s: Number(l.size) })).filter((l) => l.p > 0 && l.s > 0).sort((x, y) => y.p - x.p);
+    if (!asks.length) return null;
+    let left = STAKE, shares = 0;
+    for (const l of asks) { if (left <= 0 || l.p > asks[0].p + MAX_SLIP) break; const take = Math.min(left, l.p * l.s); shares += take / l.p; left -= take; }
+    const usd = asks.filter((l) => l.p <= asks[0].p + MAX_SLIP).reduce((a, l) => a + l.p * l.s, 0);
+    return { ask: asks[0].p, bid: bids[0]?.p ?? null, usd, fill: left <= 1e-9 ? STAKE / shares : null, book: true };
   }
 
   // ---------------------------------------------------------------- pulling (with a short cache and a saved copy)
@@ -234,7 +257,7 @@ const BASKETS = (() => {
       const { events, reached } = await findEvents(A, g);
       if (!reached) throw new Error("unreachable");
       const raw = events.flatMap((e) => (e.markets || []).map((m) => ({ ...m, _slug: e.slug })));
-      const markets = raw.map((m) => { const x = parseMarket(A, g, m, roster); if (x) x.url = `https://polymarket.com/event/${m._slug}`; return x; }).filter(Boolean);
+      const markets = raw.map((m) => { const x = parseMarket(A, g, m, roster); if (x) x.url = `https://polymarket.com/event/${m._slug}${m.slug && m.slug !== m._slug ? `/${m.slug}` : ""}`; return x; }).filter(Boolean);
       const book = markets.length ? await priceBooks(markets) : false;
       rec = { t: Date.now(), src: "live", events: events.length, rawCount: raw.length, markets, book };
       if (markets.length) save(g.id, rec);
@@ -255,6 +278,10 @@ const BASKETS = (() => {
       m.sides.forEach((side, i) => {
         const qt = m.quotes?.[i];
         if (!qt || !(qt.ask > 0.01 && qt.ask < 0.99)) return;
+        if (qt.check === "mismatch") return;   // the order book and Polymarket's summary disagree: skip it
+        if (qt.bid == null || qt.ask - qt.bid > MAX_GAP || qt.ask > MAX_PRICE) return;   // no real market here
+        const shown = m.shown?.[i];
+        if (shown != null && Math.abs(qt.ask - shown) > MAX_OFF_SHOWN) return;   // not what Polymarket's site shows
         const leg = modelLeg(A, g, m.kind, { pid: m.pid, key: m.key, line: m.kind === "spread" ? m.lines[i] : m.line, side });
         if (!leg) return;
         // too thin to take a $20 bet near the ask: leave it out
@@ -263,9 +290,9 @@ const BASKETS = (() => {
         const price = Math.min(0.995, pay + m.fee * Math.min(pay, 1 - pay));
         const flags = [];
         if (qt.book && pay - qt.ask >= 0.005) flags.push(`$${STAKE} fills at ${Math.round(pay * 100)}¢`);
-        if (qt.bid == null) flags.push("no bids");
-        else if (qt.ask - qt.bid >= WIDE) flags.push(`wide ${Math.round(qt.bid * 100)}/${Math.round(qt.ask * 100)}¢`);
-        legs.push({ ...leg, grp: group(leg), price, ask: qt.ask, bid: qt.bid, usd: qt.usd, flags, url: m.url, edge: leg.p - price });
+        if (qt.ask - qt.bid >= WIDE) flags.push(`wide ${Math.round(qt.bid * 100)}/${Math.round(qt.ask * 100)}¢`);
+        const src = `Polymarket market: "${m.q}" · buying "${m.outcomes[i]}" · best ask ${Math.round(qt.ask * 100)}¢${qt.bid != null ? `, best bid ${Math.round(qt.bid * 100)}¢` : ""} · ${qt.book ? "from the order book" : "from Polymarket's summary"}`;
+        legs.push({ ...leg, grp: group(leg), price, ask: qt.ask, bid: qt.bid, usd: qt.usd, flags, url: m.url, src, edge: leg.p - price });
       });
     }
     return legs;
@@ -533,7 +560,9 @@ const BASKETS = (() => {
   async function render(el, g, A) {
     const token = (el._basketToken = {});
     const win = pullWindow(A, g);
-    el.innerHTML = head(win.open ? "Checking Polymarket…" : esc(win.why)) + `<div class="empty">${win.open ? "Pulling Polymarket prices for this game…" : "Building model-only baskets…"}</div>`;
+    // on a re-pull for the same game, keep showing the last prices until the new ones arrive
+    if (el.dataset.gid !== g.id) el.innerHTML = head(win.open ? "Checking Polymarket…" : esc(win.why)) + `<div class="empty">${win.open ? "Pulling Polymarket prices for this game…" : "Building model-only baskets…"}</div>`;
+    el.dataset.gid = g.id;
     let rec = null;
     if (win.open) rec = await pull(A, g);
     if (el._basketToken !== token) return;   // a newer render took over
@@ -544,17 +573,22 @@ const BASKETS = (() => {
     if (!win.open) status = `${esc(win.why)} Until then these use the model's own lines, so compare each basket's break-even payout with Polymarket's price.`;
     else if (rec.src === "blocked") status = "Couldn't reach Polymarket from this computer (it may be blocked on this network). These use the model's own lines instead.";
     else if (!priced) status = `Polymarket isn't listing player props for this game yet${rec.events ? ` (found ${rec.events} event${rec.events > 1 ? "s" : ""}, but no player markets)` : ""}, checked ${new Date(rec.t).toLocaleTimeString()}. These use the model's own lines instead.`;
-    else status = `${rec.src === "saved" ? `<b>Saved</b> Polymarket prices from ${new Date(rec.t).toLocaleTimeString()} (couldn't refresh, prices may have moved)` : `Live Polymarket prices as of ${new Date(rec.t).toLocaleTimeString()}`} · ${rec.markets.filter((m) => m.kind === "player").length} player markets${rec.book ? " · order book depth" : " · summary quotes (order book unavailable)"}`;
+    else status = `${rec.src === "saved" ? `<b>Saved</b> Polymarket prices from ${new Date(rec.t).toLocaleTimeString()} (couldn't refresh, prices may have moved)` : `Polymarket prices as of <b>${new Date(rec.t).toLocaleTimeString()}</b> (updates every 2 minutes)`} · ${rec.markets.filter((m) => m.kind === "player").length} player markets${rec.book ? " · checked against the order book" : " · summary quotes (order book unavailable)"} · hover a leg to see the exact market`;
 
     simulate(A, g, legs);
     const baskets = pickSix(A, g, legs, priced);
-    el.innerHTML = head(status) + (baskets.length
+    el.innerHTML = head(status, win.open) + (baskets.length
       ? `<div class="baskets">${baskets.map((b) => card(b, priced)).join("")}</div>`
       : "") + (realCount(baskets) < SHOWN ? `<div class="note">Only ${realCount(baskets)} of 6 storylines could be built here without longshot legs, stacked bets${priced ? ", or markets too thin for a $" + STAKE + " bet" : ""} while still paying more than 4x net.</div>` : "") + foot(priced);
+    const rb = el.querySelector("[data-pm-refresh]");
+    const reprice = () => { delete CACHE[g.id]; delete LISTS[A.league]; render(el, g, A); };
+    if (rb) rb.onclick = reprice;
+    clearTimeout(el._repriceTimer);
+    if (win.open) el._repriceTimer = setTimeout(() => { if (el.isConnected && el._basketToken === token) reprice(); }, REPRICE_MS);
   }
 
-  function head(status) {
-    return `<div class="panel-head"><h2>Storyline baskets</h2><span class="muted small">${status}</span></div>`;
+  function head(status, canRefresh) {
+    return `<div class="panel-head"><h2>Storyline baskets</h2><span class="muted small">${status}</span>${canRefresh ? `<button type="button" class="btn" data-pm-refresh>Refresh prices</button>` : ""}</div>`;
   }
 
   function card(b, priced) {
@@ -566,7 +600,7 @@ const BASKETS = (() => {
     const lift = b.pj / b.prod;
     const legRows = b.legs.map((l) => `
       <tr>
-        <td>${l.url ? `<a href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.label)}</a>` : esc(l.label)}${l.q ? ` <span class="badge q" title="On the injury report">${esc(l.q)}</span>` : ""}${priced && l.flags.length ? `<div>${l.flags.map((f) => `<span class="badge q">${esc(f)}</span>`).join(" ")}</div>` : ""}</td>
+        <td>${l.url ? `<a href="${esc(l.url)}" target="_blank" rel="noopener" title="${esc(l.src || "")}">${esc(l.label)}</a>` : esc(l.label)}${l.q ? ` <span class="badge q" title="On the injury report">${esc(l.q)}</span>` : ""}${priced && l.flags.length ? `<div>${l.flags.map((f) => `<span class="badge q">${esc(f)}</span>`).join(" ")}</div>` : ""}</td>
         <td><b>${pct(l.p)}</b></td>
         ${priced ? `<td><b>${cents(l.price)}</b>${l.bid != null ? `<div class="muted small">bid ${cents(l.bid)}</div>` : ""}</td>
         <td class="${l.edge >= 0 ? "edge-good" : "edge-bad"}">${l.edge >= 0 ? "+" : "−"}${Math.abs(Math.round(l.edge * 100))}</td>` : `<td class="muted">${l.kind === "player" ? "model main line" : "market line"}</td>`}

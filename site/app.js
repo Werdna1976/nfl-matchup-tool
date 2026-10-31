@@ -730,7 +730,7 @@ function basketAdapter(g) {
   const KEYS = { QB: ["pyd", "ptd"], RB: ["ryd", "yds", "anytd"], WR: ["yds", "rec", "anytd"], TE: ["yds", "rec", "anytd"] };
   return {
     league: "nfl", daysBefore: 1,
-    gameDay: () => g.day, kickoff: () => Date.parse(`${g.day}T${g.time || "13:00"}:00${easternOffset(g.day)}`), isPost: () => RESULT.state(g) === "post",
+    gameDay: () => g.day, kickoff: () => Date.parse(`${g.day}T${g.time || "13:00"}:00${easternOffset(g.day)}`), isPost: () => RESULT.state(g) === "post", isLive: () => RESULT.state(g) === "in",
     codes: (tm) => PM_CODES[tm] || [tm.toLowerCase()],
     nicknames: (tm) => [nickOf(tm).toLowerCase().replace(/[^a-z0-9]/g, "")],
     shortName: nickOf,
