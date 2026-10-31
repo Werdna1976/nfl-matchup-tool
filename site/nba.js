@@ -803,7 +803,7 @@ function basketAdapter(g) {
   const big = { pts: 10, reb: 5, ast: 4, fg3: 1.5, pra: 20 };
   return {
     league: "nba", daysBefore: 0,
-    gameDay: () => g.date, kickoff: () => Date.parse(g.t), isPost: () => RESULT.state(g) === "post",
+    gameDay: () => g.date, kickoff: () => Date.parse(g.t), isPost: () => RESULT.state(g) === "post", isLive: () => RESULT.state(g) === "in",
     codes: (tm) => PM_CODES[tm] || [tm.toLowerCase()],
     nicknames: (tm) => [nickOf(tm).toLowerCase().replace(/[^a-z0-9]/g, "")],
     shortName: nickOf,
