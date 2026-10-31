@@ -235,6 +235,7 @@ async function refreshInjuries() {
 
 // reload the data file (rebuilt hourly) and re-check lines, injuries, and headlines
 async function reloadAll() {
+  BASKETS.clear();
   try { DATA = await loadData(); computeRanks(); } catch (e) { /* keep what we have */ }
   await refreshLines(true);
 }
@@ -355,11 +356,13 @@ function renderGame() {
 
     <div class="panel" id="players"></div>
     <div class="panel" id="spots"></div>
+    <div class="panel" id="baskets"></div>
     <div class="panel" id="notes"></div>
     <div class="panel" id="tds"></div>
     <div class="panel" id="finder"></div>
   `;
   renderTotalTool(g); renderSpreadTool(g); renderPlayers(g); renderSpots(g); renderNotes(g); renderTds(g); renderFinder(g);
+  BASKETS.render($("#baskets"), g, basketAdapter(g));
 }
 
 function lineTool(el, { title, sub, dist, def, min, max, overLabel, underLabel, legLabel }) {
@@ -691,6 +694,61 @@ function renderSpots(g) {
   $("#spots").querySelectorAll("tr[data-pid]").forEach((tr) => tr.onclick = () => openPlayer(tr.dataset.pid, g));
 }
 
+// ---------------------------------------------------------------- storyline baskets
+
+// NFL rules for baskets.js: Polymarket's team codes and stat names, which stats tell which
+// story, and how each stat moves with the game (see simulate() there).
+const PM_CODES = { LA: ["lar", "la"], WAS: ["was", "wsh"], JAX: ["jax", "jac"], LV: ["lv", "lvr"] };
+const PM_STATS = {
+  passingyards: "pyd", passyards: "pyd", passingtouchdowns: "ptd", passingtds: "ptd", passtds: "ptd", passtouchdowns: "ptd",
+  passingcompletions: "cmp", completions: "cmp", passcompletions: "cmp", passingattempts: "att", passattempts: "att",
+  interceptions: "int", interceptionsthrown: "int", passinginterceptions: "int",
+  rushingyards: "ryd", rushyards: "ryd", rushingattempts: "car", rushattempts: "car", carries: "car",
+  receivingyards: "yds", recyards: "yds", receptions: "rec", rushingtouchdowns: "rtd", receivingtouchdowns: "td",
+  anytimetouchdown: "anytd", anytimetd: "anytd", anytimetouchdownscorer: "anytd", touchdown: "anytd", touchdowns: "anytd", scoreatouchdown: "anytd", tds: "anytd",
+};
+// how each stat moves with its team's scoring (b), with being ahead (m), and with the team's passing game (pass)
+const PM_LOAD = {
+  pyd: { b: 0.5, m: -0.15, pass: 0.5 }, ptd: { b: 0.55, m: 0, pass: 0.3 }, cmp: { b: 0.2, m: -0.25, pass: 0.5 }, att: { b: 0, m: -0.4, pass: 0.35 },
+  int: { b: -0.2, m: -0.2, pass: 0 }, ryd: { b: 0.3, m: 0.3, pass: 0 }, car: { b: 0.15, m: 0.45, pass: 0 }, rtd: { b: 0.45, m: 0.15, pass: 0 },
+  yds: { b: 0.35, m: -0.1, pass: 0.4 }, rec: { b: 0.2, m: -0.15, pass: 0.4 }, td: { b: 0.45, m: 0, pass: 0.2 }, anytd: { b: 0.5, m: 0.05, pass: 0.1 },
+};
+const PM_TAGS = { pyd: ["qb", "score"], ptd: ["qb", "score"], cmp: ["qb"], att: ["qb"], yds: ["rec", "skill", "score"], rec: ["rec", "skill"], ryd: ["skill", "rush"], car: ["skill", "rush"], anytd: ["skill", "score"], rtd: ["skill"], td: ["skill"] };
+function basketAdapter(g) {
+  const nickOf = (tm) => (DATA.team_names[tm] || tm).split(" ").slice(-1)[0];
+  const info = (pid) => {
+    const p = DATA.players[pid], d = p?.proj[g.id];
+    if (!d) return null;
+    const w = ROLES.outWeight(p);
+    const core = p.pos === "QB" ? (d.att?.mean || 0) >= 20 : p.pos === "RB" ? (d.car?.mean || 0) >= 10 || (d.tgt?.mean || 0) >= 4 : (d.tgt?.mean || 0) >= 5;
+    return { pid, name: p.name, team: p.team, pos: p.pos, d, skip: w >= 0.75, q: !w && p.inj?.status ? p.inj.status : null, core };
+  };
+  const roster = [g.away, g.home].flatMap((tm) => (g.players[tm] || []).map(info).filter(Boolean));
+  const byId = new Map(roster.map((r) => [r.pid, r]));
+  const lam = (pl) => (pl.d.rtd?.mean || 0) + (pl.d.td?.mean || 0);
+  const MIN_STORY = { pyd: 150, ptd: 0.8, ryd: 30, yds: 20, rec: 2 };   // too small to tell a story with
+  const KEYS = { QB: ["pyd", "ptd"], RB: ["ryd", "yds", "anytd"], WR: ["yds", "rec", "anytd"], TE: ["yds", "rec", "anytd"] };
+  return {
+    league: "nfl", daysBefore: 1,
+    gameDay: () => g.day, kickoff: () => Date.parse(`${g.day}T${g.time || "13:00"}:00${easternOffset(g.day)}`), isPost: () => RESULT.state(g) === "post",
+    codes: (tm) => PM_CODES[tm] || [tm.toLowerCase()],
+    nicknames: (tm) => [nickOf(tm).toLowerCase().replace(/[^a-z0-9]/g, "")],
+    shortName: nickOf,
+    roster: () => roster, player: (pid) => byId.get(pid),
+    statKey: (type, text) => PM_STATS[type] || PM_STATS[text] || null,
+    statLabel: (k) => (k === "anytd" ? "touchdowns" : STATS[k].label.toLowerCase()),
+    storyKeys: (pl) => (KEYS[pl.pos] || []).filter((k) => (k === "anytd" ? lam(pl) >= 0.25 : pl.d[k]?.mean >= (MIN_STORY[k] || 0))),
+    mainLine: (pl, k) => (k === "anytd" ? 0.5 : k === "ptd" ? 1.5 : Math.floor(quantile(0.5, pl.d[k])) + 0.5),
+    prob: (pl, k, line) => (k === "anytd" ? probs({ mean: lam(pl), sd: Math.sqrt(lam(pl)), dist: "poisson" }, line) : pl.d[k] ? probs(pl.d[k], line) : null),
+    tags: (pl, k) => PM_TAGS[k] || [],
+    load: (pl, k) => ({ ...(PM_LOAD[k] || { b: 0.3, m: 0, pass: 0 }), w: 0 }),
+    duo: { a: "qb", b: "rec", title: (t) => `${t} QB and his top target connect`, blurb: (t) => `The ${t} passing game takes off: the quarterback's yards and his favorite receiver's numbers rise together.` },
+    carry: { tag: "skill", title: (t) => `Two playmakers carry the ${t}`, blurb: (t) => `A lead back and a receiver (or two receivers) both have big days for the ${t}.` },
+    runTags: ["skill", "qb"], scoreTags: ["score", "skill"],
+    blowoutNote: " The winners lean on the run late, so their back's numbers move with the lead.",
+  };
+}
+
 // ---------------------------------------------------------------- alt-line finder
 
 function finderLine(d, k, p, conf, side) {
@@ -998,6 +1056,7 @@ function openHow() {
       <p><b>Teammates who are out.</b> When a player is listed Out (or Doubtful, counted at 75%), his carries go to the other backs and most of his targets to the other receivers, weighted toward his position. A starting QB out hands his volume to the backup at lower efficiency. Where a teammate has played games without him, those real numbers are blended in. Changed numbers carry a ▲ or ▼.</p>
       <p><b>What it doesn't know.</b> Injuries during the week until the page refreshes, weather beyond what's listed, coaching changes, and snap-count news. A player listed Questionable could be on a snap limit.</p>
       <p><b>Using it for alt lines.</b> If the model says 80% and Polymarket charges 70¢, that's a possible edge. If it charges 85¢, it isn't. Multiplying many 80% legs drops fast: five of them is about 33%.</p>
+      <p><b>Storyline baskets.</b> From the day before kickoff the page reads Polymarket's player and game markets for the game you're viewing, priced at the ask (what you'd pay right now), with thin or wide markets flagged. It simulates the game 6,000 times so legs move together the way they do in real games: a QB's yards and his top receiver's rise together, a team that's ahead runs more. For each story it picks the 2–4 legs with the best expected return that together pay more than 4x net. How strongly legs move together is a reasoned estimate, not yet checked against past games.</p>
     </div>
     ${bt.length ? `<div class="panel"><h3>Track record this season</h3>
       <div class="small muted" style="margin-bottom:6px">${esc(BACKTEST.note)} A well-tuned model lands about 80% inside its 80% range and 50% inside its 50% range. "Avg miss" is the average gap between projection and result.</div>
