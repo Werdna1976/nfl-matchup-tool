@@ -268,6 +268,7 @@ async function refreshLines() {
 
 // reload the data file (rebuilt hourly) and re-check lines, injuries, and headlines
 async function reloadAll() {
+  BASKETS.clear();
   try { DATA = await loadData(); computeRanks(); DD_CACHE.clear(); } catch (e) { /* keep what we have */ }
   await refreshLines();
 }
@@ -391,10 +392,12 @@ function renderGame() {
 
     <div class="panel" id="players"></div>
     <div class="panel" id="spots"></div>
+    <div class="panel" id="baskets"></div>
     <div class="panel" id="notes"></div>
     <div class="panel" id="finder"></div>
   `;
   renderTotalTool(g); renderSpreadTool(g); renderPlayers(g); renderSpots(g); renderNotes(g); renderFinder(g);
+  BASKETS.render($("#baskets"), g, basketAdapter(g));
 }
 
 function lineTool(el, { title, sub, dist, def, min, max, overLabel, underLabel, legLabel }) {
@@ -772,6 +775,53 @@ function renderSpots(g) {
   $("#spots").querySelectorAll("tr[data-pid]").forEach((tr) => tr.onclick = () => openPlayer(tr.dataset.pid, g));
 }
 
+// ---------------------------------------------------------------- storyline baskets
+
+// NBA rules for baskets.js: Polymarket's team codes and stat names, which stats tell which
+// story, and how each stat moves with the game (see simulate() there).
+const PM_CODES = { GS: ["gsw", "gs"], NY: ["nyk", "ny"], SA: ["sas", "sa"], NO: ["nop", "no"], UTAH: ["uta", "utah"], WSH: ["was", "wsh"], BKN: ["bkn", "bk"], PHX: ["phx", "pho"] };
+const PM_STATS = {
+  points: "pts", pts: "pts", rebounds: "reb", reb: "reb", totalrebounds: "reb", assists: "ast", ast: "ast",
+  threes: "fg3", threepointers: "fg3", threepointersmade: "fg3", "3pointersmade": "fg3", "3pt": "fg3", "3pm": "fg3", threepointfieldgoalsmade: "fg3", madethrees: "fg3",
+  pointsreboundsassists: "pra", pra: "pra", ptsrebast: "pra", ptsrebsasts: "pra", pointsrebounds: "pr", ptsreb: "pr", pointsassists: "pa", ptsast: "pa", reboundsassists: "ra", rebast: "ra",
+  steals: "stl", blocks: "blk", stealsblocks: "sb", turnovers: "tov",
+};
+// share of a stat's game-to-game swing that follows its team's scoring (b), kept modest because teammates also
+// compete for the same shots; starters lose a little in blowouts (w)
+const PM_LOAD = { pts: 0.3, fg3: 0.2, ast: 0.25, reb: 0.1, pra: 0.3, pr: 0.25, pa: 0.3, ra: 0.2, stl: 0.05, blk: 0.05, sb: 0.05, tov: 0.1 };
+const PM_TAGS = { pts: ["score"], fg3: ["score"], ast: ["help"], reb: ["help"], ra: ["help"], pra: ["big"], pr: ["big"], pa: ["big"] };
+function basketAdapter(g) {
+  const nickOf = (tm) => (DATA.team_names[tm] || tm).split(" ").slice(-1)[0];
+  const info = (pid) => {
+    const p = DATA.players[pid], d = p?.proj[g.id];
+    if (!d) return null;
+    const w = ROLES.outWeight(p);
+    return { pid, name: p.name, team: p.team, pos: p.pos, d, skip: w >= 0.75, q: !w && p.inj?.status ? p.inj.status : null, core: d.min.mean >= 24 };
+  };
+  const roster = [g.away, g.home].flatMap((tm) => (g.players[tm] || []).map(info).filter(Boolean));
+  const byId = new Map(roster.map((r) => [r.pid, r]));
+  const big = { pts: 10, reb: 5, ast: 4, fg3: 1.5, pra: 20 };
+  return {
+    league: "nba", daysBefore: 0,
+    gameDay: () => g.date, kickoff: () => Date.parse(g.t), isPost: () => RESULT.state(g) === "post",
+    codes: (tm) => PM_CODES[tm] || [tm.toLowerCase()],
+    nicknames: (tm) => [nickOf(tm).toLowerCase().replace(/[^a-z0-9]/g, "")],
+    shortName: nickOf,
+    roster: () => roster, player: (pid) => byId.get(pid),
+    statKey: (type, text) => PM_STATS[type] || PM_STATS[text] || null,
+    statLabel: (k) => (STATS[k].parts ? STATS[k].short : STATS[k].label.toLowerCase()),
+    storyKeys: (pl) => Object.keys(big).filter((k) => pl.d[k]?.mean >= big[k]),
+    mainLine: (pl, k) => Math.floor(pl.d[k].mean) + 0.5,
+    prob: (pl, k, line) => (pl.d[k] ? probs(pl.d[k], line) : null),
+    tags: (pl, k) => PM_TAGS[k] || [],
+    load: (pl, k) => ({ b: PM_LOAD[k] ?? 0.2, m: 0, pass: 0, w: pl.d.min.mean >= 28 ? -0.25 : pl.d.min.mean < 18 ? 0.15 : 0 }),
+    duo: { a: "score", b: "help", title: (t) => `Big night for a ${t} scorer and a playmaker`, blurb: (t) => `One ${t} player piles up points while a teammate racks up assists or rebounds. Both ride the same good night for the offense.` },
+    carry: { tag: "big", title: (t) => `Two players carry the ${t}`, blurb: (t) => `Two ${t} regulars fill the stat sheet (points, rebounds, and assists together).` },
+    runTags: ["score", "big"], scoreTags: ["score", "big"],
+    blowoutNote: " In a true blowout the winners' starters can sit the fourth quarter, which the odds account for.",
+  };
+}
+
 // ---------------------------------------------------------------- alt-line finder
 
 function finderLine(d, k, p, conf, side) {
@@ -1044,6 +1094,7 @@ function openHow() {
       <p><b>Teammates who are out.</b> When a regular is listed Out (or Doubtful, counted at 75%), the lineup and minutes are refit without him, with more of his minutes going to his position, and the scoring, rebounding, and passing those minutes don't cover is spread across the rest. Where a teammate has played games without him, those real numbers are blended in. Changed numbers carry a ▲ or ▼.</p>
       <p><b>What it doesn't know.</b> Late scratches until the page refreshes, minutes limits, and coaching choices. Check the injury report close to tip-off.</p>
       <p><b>Using it for alt lines.</b> If the model says 80% and Polymarket charges 70¢, that's a possible edge. If it charges 85¢, it isn't. Multiplying many 80% legs drops fast: five of them is about 33%.</p>
+      <p><b>Storyline baskets.</b> On game day the page reads Polymarket's player and game markets for the game you're viewing, priced at the ask (what you'd pay right now), with thin or wide markets flagged. It simulates the game 6,000 times so legs move together the way they do in real games: a fast, high-scoring night lifts every scorer, a blowout sits the starters. For each story it picks the 2–4 legs with the best expected return that together pay more than 4x net. How strongly legs move together is a reasoned estimate, not yet checked against past games.</p>
     </div>
     ${bt.length ? `<div class="panel"><h3>Track record</h3>
       <div class="small muted" style="margin-bottom:6px">${esc(BACKTEST.note)} A well-tuned model lands about 80% inside its 80% range and 50% inside its 50% range. "Avg miss" is the average gap between projection and result.</div>
