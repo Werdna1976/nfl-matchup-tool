@@ -22,7 +22,9 @@ const BASKETS = (() => {
   const WIDE = 0.05;                 // bid-ask gap (in dollars per share) that counts as wide
   const THIN_LIQ = 1000, THIN_USD = 50;
   const CACHE_MS = 90 * 1000;        // reuse a pull for 90 seconds while clicking around
-  const MAX_SHOWN = 6;
+  const SHOWN = 6;                   // baskets per game: both "runs away" stories plus the best four others
+  const MIN_LEG_P = 0.4, MIN_PRICE = 0.3;   // no longshot legs: the model and the market both give it a real chance
+  const MIN_JOINT = 0.12;            // and no basket the model gives less than a 12% chance (about 1 in 8)
   const SAVE_KEY = "pmBasketQuotes", SAVE_MAX_MS = 6 * 3600 * 1000;
 
   // ---------------------------------------------------------------- small helpers
@@ -129,9 +131,9 @@ const BASKETS = (() => {
       if (line == null || !sides[0] || !sides[1]) return null;
       return { ...base, kind: "total", line, sides };
     }
+    const teamOf = (s) => [g.away, g.home].find((tm) => A.nicknames(tm).some((n) => squash(s).includes(n)) || A.codes(tm).includes(squash(s)));
     // spread: "Spread: Lakers (-5.5)", outcomes are the two teams
     if (/spread/.test(type)) {
-      const teamOf = (s) => [g.away, g.home].find((tm) => A.nicknames(tm).some((n) => squash(s).includes(n)) || A.codes(tm).includes(squash(s)));
       const sides = outcomes.map(teamOf);
       if (!sides[0] || !sides[1] || sides[0] === sides[1]) return null;
       const mm = /\(([+-]?\d+(?:\.\d+)?)\)/.exec(q);
@@ -142,7 +144,11 @@ const BASKETS = (() => {
       const lines = sides.map((tm) => (tm === lineTeam ? L : -L));
       return { ...base, kind: "spread", sides, lines };
     }
-    if (/moneyline|^ml$/.test(type)) return null;
+    if (/moneyline|^ml$|winner/.test(type)) {
+      const sides = outcomes.map(teamOf);
+      if (!sides[0] || !sides[1] || sides[0] === sides[1]) return null;
+      return { ...base, kind: "ml", sides };
+    }
 
     // player props: "LeBron James: Points O/U 24.5", or "Will X record 25+ points?"
     let name = null, statText = "";
@@ -250,7 +256,7 @@ const BASKETS = (() => {
         if (qt.bid == null) flags.push("no bids");
         else if (qt.ask - qt.bid >= WIDE) flags.push(`wide ${Math.round(qt.bid * 100)}/${Math.round(qt.ask * 100)}¢`);
         if (qt.usd != null ? qt.usd < THIN_USD : m.liq < THIN_LIQ) flags.push(qt.usd != null ? `thin: $${Math.round(qt.usd)} for sale` : "thin");
-        legs.push({ ...leg, mid: m.id, price, ask: qt.ask, bid: qt.bid, usd: qt.usd, flags, url: m.url, edge: leg.p - price });
+        legs.push({ ...leg, grp: group(leg), price, ask: qt.ask, bid: qt.bid, usd: qt.usd, flags, url: m.url, edge: leg.p - price });
       });
     }
     return legs;
@@ -266,29 +272,37 @@ const BASKETS = (() => {
         if (line == null) continue;
         for (const side of key === "anytd" ? ["over"] : ["over", "under"]) {
           const leg = modelLeg(A, g, "player", { pid: pl.pid, key, line, side });
-          if (leg && leg.p > 0.2 && leg.p < 0.85) legs.push({ ...leg, mid: `${pl.pid}|${key}` });
+          if (leg && leg.p >= MIN_LEG_P && leg.p < 0.85) legs.push({ ...leg, grp: group(leg) });
         }
       }
     }
     const m = g.model;
     if (g.total != null || m.total?.mean) {
       const L = g.total ?? Math.round(m.total.mean) + 0.5;
-      for (const side of ["over", "under"]) legs.push({ ...modelLeg(A, g, "total", { line: L, side }), mid: "total" });
+      for (const side of ["over", "under"]) legs.push(modelLeg(A, g, "total", { line: L, side }));
     }
-    if (g.spread != null) {
-      // g.spread > 0 means the home team is favored by that much
-      legs.push({ ...modelLeg(A, g, "spread", { side: g.home, line: -g.spread }), mid: "spread" });
-      legs.push({ ...modelLeg(A, g, "spread", { side: g.away, line: g.spread }), mid: "spread" });
-    }
-    return legs;
+    // g.spread > 0 means the home team is favored by that much; with no line yet, the model's margin stands in
+    const sp = g.spread ?? Math.floor(m.margin.mean) + 0.5;
+    legs.push(modelLeg(A, g, "spread", { side: g.home, line: -sp }), modelLeg(A, g, "spread", { side: g.away, line: sp }));
+    legs.push(modelLeg(A, g, "ml", { side: g.home }), modelLeg(A, g, "ml", { side: g.away }));
+    return legs.map((l) => ({ ...l, grp: group(l) })).filter((l) => l.kind === "player" || l.p >= 0.1);
   }
 
+  // Legs that can't sit in the same basket: all of one player's props, every spread and
+  // moneyline (they're all bets on who wins and by how much), and every total line.
+  const group = (l) => (l.kind === "player" ? `p${l.pid}` : l.kind === "total" ? "total" : "outcome");
+  const isGame = (l) => l.kind !== "player";
+
+  // Polymarket's wording: over 7.5 is "8+", under 7.5 is "7 or fewer"
+  const lineTxt = (side, line) => (Math.abs(line % 1 - 0.5) < 1e-9
+    ? (side === "over" ? `${Math.ceil(line)}+` : `${Math.floor(line)} or fewer`)
+    : `${side} ${line}`);
   const sgn = (v) => (v > 0 ? `+${v}` : v === 0 ? "pk" : `${v}`);
   function modelLeg(A, g, kind, { pid, key, line, side }) {
     const m = g.model;
     if (kind === "total") {
       const z = (line - m.total.mean) / m.total.sd, under = Phi(z);
-      return { kind, line, side, p: side === "over" ? 1 - under : under, label: `Game total ${side} ${line}` };
+      return { kind, line, side, p: side === "over" ? 1 - under : under, label: `Game total ${lineTxt(side, line)} points` };
     }
     if (kind === "spread") {
       // side's margin = +margin for home, -margin for away; covers if margin + line > 0
@@ -296,14 +310,18 @@ const BASKETS = (() => {
       const p = 1 - Phi((-line - mean) / m.margin.sd);
       return { kind, line, side, team: side, p, label: `${A.shortName(side)} ${sgn(line)}` };
     }
+    if (kind === "ml") {
+      const mean = side === g.home ? m.margin.mean : -m.margin.mean;
+      return { kind, side, team: side, p: 1 - Phi(-mean / m.margin.sd), label: `${A.shortName(side)} win` };
+    }
     const pl = A.player(pid);
     if (!pl || pl.skip) return null;   // ruled out or doubtful: never a leg
     const pr = A.prob(pl, key, line);
     if (!pr) return null;
     const p = side === "over" ? pr.over : pr.under;
     return {
-      kind, pid, key, line, side, p, team: pl.team, core: pl.core, tags: A.tags(pl, key), name: pl.name, q: pl.q,
-      label: key === "anytd" && side === "over" && line < 1 ? `${pl.name} anytime TD` : `${pl.name} ${side} ${line} ${A.statLabel(key)}`,
+      kind, pid, key, line, side, p, team: pl.team, core: pl.core, story: A.storyKeys(pl).includes(key), tags: A.tags(pl, key), name: pl.name, q: pl.q,
+      label: key === "anytd" && side === "over" && line < 1 ? `${pl.name} anytime TD` : `${pl.name} ${lineTxt(side, line)} ${A.statLabel(key)}`,
     };
   }
 
@@ -343,7 +361,7 @@ const BASKETS = (() => {
     for (const leg of legs) {
       const hit = new Uint8Array(N);
       if (leg.kind === "total") for (let i = 0; i < N; i++) hit[i] = leg.side === "over" ? T[i] > leg.line : T[i] < leg.line;
-      else if (leg.kind === "spread") { const s = leg.side === g.home ? 1 : -1; for (let i = 0; i < N; i++) hit[i] = s * M[i] + leg.line > 0; }
+      else if (leg.kind === "spread" || leg.kind === "ml") { const s = leg.side === g.home ? 1 : -1, L = leg.kind === "ml" ? 0 : leg.line; for (let i = 0; i < N; i++) hit[i] = s * M[i] + L > 0; }
       else {
         const id = `${leg.pid}|${leg.key}`;
         if (!latent.has(id)) {
@@ -374,6 +392,7 @@ const BASKETS = (() => {
   // ---------------------------------------------------------------- storylines
 
   // tm = the team the story is about, opp = the other one. "need" = how many legs must fit.
+  // Every basket also needs at least one game leg (moneyline, spread, or total).
   function stories(A, g) {
     const both = [[g.away, g.home], [g.home, g.away]], out = [];
     const nick = (tm) => A.shortName(tm);
@@ -381,69 +400,89 @@ const BASKETS = (() => {
     const main = (l) => A.scoreTags.some((t) => l.tags.includes(t));
     const isOver = (l) => l.kind === "player" && l.side === "over";
     const isUnder = (l) => l.kind === "player" && l.side === "under";
+    const wins = (tm) => (l) => (l.kind === "spread" || l.kind === "ml") && l.side === tm;
+    // running away means winning outright or covering while giving points, never taking them
+    const dominates = (tm) => (l) => l.side === tm && (l.kind === "ml" || (l.kind === "spread" && l.line < 0));
+    const total = (side) => (l) => l.kind === "total" && l.side === side;
     const dog = g.model.margin.mean >= 0 ? g.away : g.home;
+    const dogCover = (l) => l.kind === "spread" && l.side === dog && l.line > 0;
     for (const [tm, opp] of both) {
       out.push({
+        id: `run-${tm}`, base: true, title: `${nick(tm)} run away with it`,
+        blurb: `${nick(tm)} win comfortably, their key players feast, and ${poss(opp)} go quiet.${A.blowoutNote}`,
+        pool: (l) => dominates(tm)(l) || (isOver(l) && l.team === tm && l.core && A.runTags.some((t) => l.tags.includes(t))) || (isUnder(l) && l.team === opp && l.core && main(l)),
+        need: [[dominates(tm), 1], [(l) => isOver(l) && l.team === tm, 1]], max: 4,
+        // the underdog winning is a real scenario, so its moneyline may go down to about 1 in 4
+        // for a big underdog that's the whole point, so in the looser pass it may go lower still
+        floor: (l, loose) => (dominates(tm)(l) ? (loose ? 0.1 : 0.25) : null),
+      });
+      out.push({
         id: `shut-${tm}`, title: `${nick(opp)} defense shuts down ${nick(tm)}`,
-        blurb: `${poss(tm)} main options all come in under, and the game stays low-scoring.`,
-        pool: (l) => (isUnder(l) && l.team === tm && l.core && main(l)) || (l.kind === "total" && l.side === "under") || (l.kind === "spread" && l.side === opp),
+        blurb: `${poss(tm)} main options come in under, and ${nick(opp)} take care of business.`,
+        pool: (l) => (isUnder(l) && l.team === tm && l.core && main(l)) || total("under")(l) || wins(opp)(l),
         need: [[(l) => isUnder(l) && l.team === tm, 2]], max: 4,
       });
       out.push({
         id: `duo-${tm}`, title: A.duo.title(nick(tm)), blurb: A.duo.blurb(nick(tm)),
-        pool: (l) => isOver(l) && l.team === tm && (l.tags.includes(A.duo.a) || l.tags.includes(A.duo.b)),
-        need: [[(l) => l.tags.includes(A.duo.a), 1], [(l) => l.tags.includes(A.duo.b) && !l.tags.includes(A.duo.a), 1]], max: 3,
+        pool: (l) => (isOver(l) && l.team === tm && (l.tags.includes(A.duo.a) || l.tags.includes(A.duo.b))) || wins(tm)(l) || total("over")(l),
+        need: [[(l) => isOver(l) && l.tags.includes(A.duo.a), 1], [(l) => isOver(l) && l.tags.includes(A.duo.b) && !l.tags.includes(A.duo.a), 1]], max: 4,
       });
       out.push({
         id: `carry-${tm}`, title: A.carry.title(nick(tm)), blurb: A.carry.blurb(nick(tm)),
-        pool: (l) => (isOver(l) && l.team === tm && l.core && l.tags.includes(A.carry.tag)) || (l.kind === "spread" && l.side === tm),
-        need: [[(l) => isOver(l) && l.tags.includes(A.carry.tag), 2]], max: 3,
-      });
-      out.push({
-        id: `run-${tm}`, title: `${nick(tm)} run away with it`,
-        blurb: `${nick(tm)} cover comfortably, their key players feast, and ${poss(opp)} go quiet.${A.blowoutNote}`,
-        pool: (l) => (l.kind === "spread" && l.side === tm) || (isOver(l) && l.team === tm && l.core && A.runTags.some((t) => l.tags.includes(t))) || (isUnder(l) && l.team === opp && l.core && main(l)),
-        need: [[(l) => (l.kind === "spread" && l.side === tm) || isOver(l), 1], [(l) => (l.kind === "spread" && l.side === tm) || isUnder(l), 1]], max: 4,
+        pool: (l) => (isOver(l) && l.team === tm && l.core && l.tags.includes(A.carry.tag)) || wins(tm)(l) || total("over")(l),
+        need: [[(l) => isOver(l) && l.tags.includes(A.carry.tag), 2]], max: 4,
       });
     }
     out.push({
       id: "close", title: "Close game, starters play it out",
       blurb: `${nick(dog)} keep it within the number, so both teams' stars play the whole fourth quarter.`,
-      pool: (l) => (l.kind === "spread" && l.side === dog) || (isOver(l) && l.core),
-      need: [[(l) => isOver(l) && l.team === g.home, 1], [(l) => isOver(l) && l.team === g.away, 1]], max: 4,
+      pool: (l) => dogCover(l) || (isOver(l) && l.core) || total("over")(l),
+      need: [[dogCover, 1], [(l) => isOver(l) && l.team === g.home, 1], [(l) => isOver(l) && l.team === g.away, 1]], max: 4,
     });
     out.push({
       id: "shootout", title: "Shootout", blurb: "Lots of possessions and points: the total goes over and scorers on both sides cash.",
-      pool: (l) => (l.kind === "total" && l.side === "over") || (isOver(l) && l.core && A.scoreTags.some((t) => l.tags.includes(t))),
-      need: [[(l) => isOver(l) && l.team === g.home, 1], [(l) => isOver(l) && l.team === g.away, 1]], max: 4,
+      pool: (l) => total("over")(l) || (isOver(l) && l.core && main(l)),
+      need: [[total("over"), 1], [isOver, 1]], max: 4,
     });
     out.push({
-      id: "grind", title: "Low-scoring grind", blurb: "A slow, ugly game: the total goes under and both teams' main options fall short.",
-      pool: (l) => (l.kind === "total" && l.side === "under") || (isUnder(l) && l.core && A.scoreTags.some((t) => l.tags.includes(t))),
-      need: [[(l) => isUnder(l) && l.team === g.home, 1], [(l) => isUnder(l) && l.team === g.away, 1]], max: 4,
+      id: "grind", title: "Low-scoring grind", blurb: "A slow, ugly game: the total goes under and the main options on both sides fall short.",
+      pool: (l) => total("under")(l) || (isUnder(l) && l.core && main(l)),
+      need: [[total("under"), 1], [isUnder, 1]], max: 4,
     });
     out.push({
       id: "value", title: "Scooping up the inefficiencies", priced: true,
-      blurb: "No story, just the legs where the model's chance is furthest above Polymarket's price, mixed so they don't lean on each other.",
-      pool: (l) => l.edge >= 0.03, need: [], max: 4,
+      blurb: "No story, just the legs where the model's chance is furthest above Polymarket's price.",
+      pool: (l) => l.edge >= 0.03 || (isGame(l) && l.edge >= 0), need: [], max: 4,
     });
     return out;
   }
 
-  // Best 2-4 leg basket for a story: one leg per player and per game market, payout above 4x
-  // net. With prices it maximizes the expected return; without them, how much the story's
-  // correlation lifts the chance above the legs' plain product.
-  function best(story, legs, priced) {
-    const pool = legs.filter(story.pool)
-      .sort((a, b) => (priced ? b.edge - a.edge : b.p - a.p)).slice(0, 10);
+  // Best 2-4 leg basket for a story: one leg per player, one bet on who wins, one total, at
+  // least one game leg, no longshots, and a payout above 4x net. With prices it maximizes the
+  // expected return; without them, how much the story's correlation lifts the chance above the
+  // legs' plain product. `loose` widens the longshot limits a little when a game is short of stories.
+  function best(story, legs, priced, loose) {
+    const legMin = loose ? MIN_LEG_P - 0.05 : MIN_LEG_P, priceMin = loose ? MIN_PRICE - 0.05 : MIN_PRICE;
+    // the two "runs away" stories always show, even for a big underdog, so their floor drops furthest
+    const jointMin = loose ? (story.base ? 0.04 : MIN_JOINT * 0.75) : MIN_JOINT;
+    const ok = legs.filter((l) => {
+      // story legs use stats the player is known for (a playmaker's assists, not a center's)
+      if (!story.pool(l) || (l.kind === "player" && !l.story && !story.priced)) return false;
+      const f = story.floor?.(l, loose);
+      return f != null ? l.p >= f && (!priced || l.price >= f - 0.05) : l.p >= legMin && (!priced || l.price >= priceMin);
+    });
+    const rank = (a, b) => (priced ? b.edge - a.edge : b.p - a.p);
+    // the best few legs for each thing the story needs, then the best of the rest
+    const sorted = ok.sort(rank);
+    const pool = [...new Set([...story.need.flatMap(([f]) => sorted.filter(f).slice(0, 4)), ...sorted.filter(isGame).slice(0, 3), ...sorted.filter((l) => !isGame(l)).slice(0, 5)])];
     let top = null;
     const pick = [];
-    const okNeed = () => story.need.every(([f, n]) => pick.filter(f).length >= n);
+    const okNeed = () => pick.some(isGame) && story.need.every(([f, n]) => pick.filter(f).length >= n);
     const visit = (start) => {
       if (pick.length >= 2 && okNeed()) {
         const prod = pick.reduce((a, l) => a * l.p, 1), pj = joint(pick);
         const pay = priced ? 1 / pick.reduce((a, l) => a * l.price, 1) : (pj > 0 ? 1 / pj : Infinity);
-        if (pay - 1 > MIN_NET && pj > 0) {
+        if (pay - 1 > MIN_NET && pj >= jointMin) {
           const score = priced ? pj * pay - 1 : pj / prod;
           if (!top || score > top.score) top = { legs: [...pick], pj, prod, pay, score, ev: priced ? pj * pay - 1 : null };
         }
@@ -451,12 +490,31 @@ const BASKETS = (() => {
       if (pick.length >= story.max) return;
       for (let i = start; i < pool.length; i++) {
         const l = pool[i];
-        if (pick.some((p) => p.mid === l.mid || (l.pid && p.pid === l.pid))) continue;
+        if (pick.some((p) => p.grp === l.grp)) continue;
         pick.push(l); visit(i + 1); pick.pop();
       }
     };
     visit(0);
     return top && { ...story, ...top };
+  }
+
+  // Six per game: both "runs away" baskets, then the best of the rest, skipping any that mostly
+  // repeat one already shown. If that leaves the game short, try again with slightly looser limits.
+  function pickSix(A, g, legs, priced) {
+    const all = stories(A, g).filter((s) => priced || !s.priced);
+    const firstOf = (list) => { for (const loose of [false, true]) { const b = list.map((s) => best(s, legs, priced, loose)).filter(Boolean); if (b.length) return b; } return []; };
+    // the two "runs away" baskets come first, at looser limits only if they must
+    const shown = all.filter((s) => s.base).flatMap((s) => firstOf([s]));
+    const repeats = (b) => shown.some((o) => b.legs.filter((l) => o.legs.includes(l)).length >= Math.min(3, b.legs.length));
+    for (const loose of [false, true]) {
+      const got = all.filter((s) => !s.base && !shown.some((b) => b.id === s.id)).map((s) => best(s, legs, priced, loose)).filter(Boolean);
+      for (const b of got.sort((x, y) => y.score - x.score)) {
+        if (shown.length >= SHOWN) break;
+        if (!repeats(b)) shown.push(b);
+      }
+      if (shown.length >= SHOWN) break;
+    }
+    return shown;
   }
 
   // ---------------------------------------------------------------- panel
@@ -478,16 +536,10 @@ const BASKETS = (() => {
     else status = `${rec.src === "saved" ? `<b>Saved</b> Polymarket prices from ${new Date(rec.t).toLocaleTimeString()} (couldn't refresh, prices may have moved)` : `Live Polymarket prices as of ${new Date(rec.t).toLocaleTimeString()}`} · ${rec.markets.filter((m) => m.kind === "player").length} player markets${rec.book ? " · order book depth" : " · summary quotes (order book unavailable)"}`;
 
     simulate(A, g, legs);
-    // best stories first; skip one that mostly repeats a basket already shown
-    const baskets = [];
-    for (const b of stories(A, g).filter((s) => priced || !s.priced).map((s) => best(s, legs, priced)).filter(Boolean).sort((a, b) => b.score - a.score)) {
-      if (baskets.length >= MAX_SHOWN) break;
-      if (baskets.some((o) => b.legs.filter((l) => o.legs.includes(l)).length >= Math.min(3, b.legs.length))) continue;
-      baskets.push(b);
-    }
+    const baskets = pickSix(A, g, legs, priced);
     el.innerHTML = head(status) + (baskets.length
       ? `<div class="baskets">${baskets.map((b) => card(b, priced)).join("")}</div>`
-      : `<div class="empty">No storyline here pays more than 4x net with the legs available${priced ? " on Polymarket" : ""}.</div>`) + foot(priced);
+      : "") + (baskets.length < SHOWN ? `<div class="note">Only ${baskets.length} of 6 storylines could be built here without longshot legs or stacked bets while still paying more than 4x net${priced ? " with the markets Polymarket lists for this game" : ""}.</div>` : "") + foot(priced);
   }
 
   function head(status) {
@@ -510,7 +562,7 @@ const BASKETS = (() => {
     const warn = priced && b.legs.some((l) => l.flags.length) ? `<div class="note">Some legs are thinly traded or have a wide bid/ask gap. The price shown is the ask; buying more than what's for sale pushes it higher.</div>` : "";
     return `
       <div class="basket ${priced ? (b.ev >= 0 ? "good" : "bad") : ""}">
-        <div class="basket-head"><b>${esc(b.title)}</b>${priced && b.ev < 0 ? ` <span class="badge out">Overpriced</span>` : ""}</div>
+        <div class="basket-head"><b>${esc(b.title)}</b>${priced && b.ev < 0 ? ` <span class="badge out">Overpriced</span>` : ""}${b.pj < MIN_JOINT ? ` <span class="badge q" title="Shown because both 'runs away' stories always appear, but this team is a big underdog">Long shot</span>` : ""}</div>
         <div class="muted small">${esc(b.blurb)}</div>
         <div class="table-wrap"><table>
           <thead><tr><th>Leg</th><th>Model</th>${priced ? `<th title="What you'd pay now (the ask)">Price</th><th title="Model chance minus price, in cents">Edge</th>` : `<th>Line</th>`}</tr></thead>
@@ -523,8 +575,8 @@ const BASKETS = (() => {
   function foot(priced) {
     return `<div class="note">${priced ? "Payout assumes you buy every leg at today's ask; if Polymarket's parlay builder quotes a different price for the combo, use that. " : ""}Baskets paying 5x back or more hit 20% of the time or less, even when they're good bets: size them small.
       The legs here are chosen to move together, which is the point of a storyline, but how strongly they move together is the model's estimate, not something it has been tested on yet.
-      Players ruled Out or Doubtful are never used; Questionable ones are marked.</div>`;
+      Every basket includes at least one bet on the game itself, uses one leg per player, one bet on the winner (spread or moneyline), and one total, and skips legs the model or the market gives under about a 40% chance. Players ruled Out or Doubtful are never used; Questionable ones are marked.</div>`;
   }
 
-  return { render, clear, pullWindow, parseMarket, simulate, joint, best, stories, legsFromModel, legsFromMarkets, priceBooks, eventMatches, N };
+  return { render, clear, pickSix, pullWindow, parseMarket, simulate, joint, best, stories, legsFromModel, legsFromMarkets, priceBooks, eventMatches, N };
 })();
