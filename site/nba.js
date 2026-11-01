@@ -158,7 +158,7 @@ const ord = (n) => n + (["th", "st", "nd", "rd"][(n % 100 > 10 && n % 100 < 14) 
 // ---------------------------------------------------------------- state
 
 let DATA = null, BACKTEST = null;
-const state = { date: null, gameId: null, team: null, conf: 0.75, side: "over", prop: "ALL" };
+const state = { view: null, date: null, gameId: null, team: null, conf: 0.75, side: "over", prop: "ALL" };
 const SLIP_KEY = "nbaSlip";
 let slip = [];
 try { slip = JSON.parse(localStorage.getItem(SLIP_KEY) || "[]"); } catch (e) { slip = []; }
@@ -299,8 +299,10 @@ async function boot() {
   state.date = hash.get("date");
   if (!DATA.dates.includes(state.date)) state.date = DATA.dates[0];
   state.gameId = hash.get("game");
+  state.view = hash.get("view") === "props" ? "props" : null;
   renderMeta();
   $("#refreshBtn").onclick = reloadAll;
+  $("#propsBtn").onclick = openProps;
   NOTES.autoRefresh(reloadAll);
   $("#slipBtn").onclick = () => toggleSlip(true);
   $("#howLink").onclick = (e) => { e.preventDefault(); openHow(); };
@@ -314,6 +316,7 @@ function setHash() {
   const h = new URLSearchParams();
   if (state.date) h.set("date", state.date);
   if (state.gameId) h.set("game", state.gameId);
+  if (state.view) h.set("view", state.view);
   history.replaceState(null, "", `#${h}`);
 }
 
@@ -338,19 +341,20 @@ function computeRanks() {
 
 function renderDates() {
   $("#weeks").innerHTML = DATA.dates.map((d) => `<button type="button" aria-pressed="${d === state.date}" data-d="${d}">${esc(dayLabel(d))}</button>`).join("");
-  $("#weeks").querySelectorAll("button").forEach((b) => b.onclick = () => { state.date = b.dataset.d; state.gameId = null; renderDates(); renderGames(); });
+  $("#weeks").querySelectorAll("button").forEach((b) => b.onclick = () => { state.view = null; state.date = b.dataset.d; state.gameId = null; renderDates(); renderGames(); });
 }
 
 function renderGames() {
   const games = DATA.games.filter((g) => g.date === state.date);
   // open on the first game that isn't over yet
   if (!games.find((g) => g.id === state.gameId)) state.gameId = (games.find((g) => RESULT.state(g) !== "post") || games[0])?.id;
-  $("#games").innerHTML = games.map((g) => `
-    <button type="button" class="gcard ${RESULT.state(g)}" data-id="${g.id}" aria-current="${g.id === state.gameId}">
+  $("#games").innerHTML = PROPS_CARD() + (games.map((g) => `
+    <button type="button" class="gcard ${RESULT.state(g)}" data-id="${g.id}" aria-current="${!state.view && g.id === state.gameId}">
       <div class="row"><span class="teams">${RESULT.teams(g)}</span>${RESULT.badge(g) || `<span class="when">${esc(tipTime(g))}</span>`}</div>
       <div class="lines">${RESULT.state(g) === "post" ? esc(RESULT.settled(g)) : g.spread != null ? `${esc(spreadText(g))} · O/U ${g.total}` : `No line yet · model ${fmt(g.model.model_total, 0)}`}</div>
-    </button>`).join("") || `<div class="empty">No games on this day.</div>`;
-  $("#games").querySelectorAll(".gcard").forEach((b) => b.onclick = () => { state.gameId = b.dataset.id; state.team = null; renderGames(); });
+    </button>`).join("") || `<div class="empty">No games on this day.</div>`);
+  $("#games").querySelectorAll(".gcard[data-id]").forEach((b) => b.onclick = () => { state.view = null; state.gameId = b.dataset.id; state.team = null; renderGames(); });
+  $("#games").querySelector("[data-props]").onclick = openProps;
   setHash();
   renderGame();
 }
@@ -359,7 +363,28 @@ function renderGames() {
 
 function curGame() { return DATA.games.find((g) => g.id === state.gameId); }
 
+// ---------------------------------------------------------------- best props, all games today and tomorrow
+
+const PROPS_CARD = () => `
+    <button type="button" class="gcard props-card" data-props aria-current="${state.view === "props"}">
+      <div class="row"><span class="teams">★ Best props today</span></div>
+      <div class="lines">Underpriced, every game today and tomorrow</div>
+    </button>`;
+function openProps() { state.view = "props"; renderGames(); window.scrollTo({ top: 0 }); }
+function openFromProps(id) {
+  const g = DATA.games.find((x) => x.id === id);
+  if (!g) return;
+  state.view = null; state.gameId = id; state.team = null; state.date = g.date;
+  renderDates(); renderGames(); window.scrollTo({ top: 0 });
+}
+function renderProps() {
+  let el = $("#allprops");
+  if (!el) { $("#game").innerHTML = `<div class="panel" id="allprops"></div>`; el = $("#allprops"); }
+  ALLPROPS.render(el, { games: DATA.games, adapter: basketAdapter, onOpen: openFromProps, sport: "NBA" });
+}
+
 function renderGame() {
+  if (state.view === "props") return renderProps();
   const g = curGame();
   if (!g) { $("#game").innerHTML = DATA.games.length ? "" : `<div class="panel empty">No upcoming NBA games in the data file. In the offseason this page is empty.</div>`; return; }
   if (!state.team) state.team = g.away;
