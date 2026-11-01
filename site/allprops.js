@@ -47,18 +47,20 @@ const ALLPROPS = (() => {
     if (rec.src === "blocked") { info.status = "Polymarket unreachable"; return info; }
     if (!priced) { info.status = "no player props posted yet"; return info; }
     const legs = BASKETS.legsFromMarkets(A, g, rec.markets);
-    info.rows = BASKETS.underpriced(legs).map((l) => ({ ...l, gi: info }));
-    info.status = `${info.rows.length} underpriced${rec.src === "saved" ? " (saved prices)" : ""}`;
+    // each row pressure-tested (vet.js) against its own game's markets
+    info.rows = BASKETS.underpriced(legs, (l) => VET.grade(l, { A, g, legs })).map((l) => ({ ...l, gi: info }));
+    info.status = `${info.rows.filter((l) => l.vet.level !== "skip").length} passed checks${rec.src === "saved" ? " (saved prices)" : ""}`;
     info.ok = true;
     return info;
   }
 
-  // the cross-game list: biggest edge first, capped per game and per kind of bet
-  function best(all) {
+  // the cross-game list: the most edge left after the checks first, capped per game and per
+  // kind of bet. Skips aren't in it; they're listed apart.
+  function best(all, n = SHOWN) {
     const kindOf = (l) => (l.kind === "player" ? `${l.key}|${l.side}` : l.kind === "total" ? "total" : "result");
     const byGame = new Map(), byKind = new Map(), out = [];
-    for (const r of [...all].sort((a, b) => b.edge - a.edge)) {
-      if (out.length >= SHOWN) break;
+    for (const r of VET.sort(all.filter((l) => l.vet?.level !== "skip"))) {
+      if (out.length >= n) break;
       const ng = byGame.get(r.gi) || 0, nk = byKind.get(kindOf(r)) || 0;
       if (ng >= PER_GAME || nk >= PER_KIND) continue;
       out.push(r); byGame.set(r.gi, ng + 1); byKind.set(kindOf(r), nk + 1);
@@ -66,20 +68,7 @@ const ALLPROPS = (() => {
     return out;
   }
 
-  function row(l, i, showGame) {
-    const gi = l.gi;
-    const bet = `${l.url ? `<a href="${esc(l.url)}" target="_blank" rel="noopener" title="${esc(l.src || "")}">${esc(l.label)}</a>` : esc(l.label)}${l.q || l.flags.length ? `<div class="tags">${[l.q, ...l.flags].filter(Boolean).map((f) => `<span class="badge q">${esc(f)}</span>`).join(" ")}</div>` : ""}${l.range ? `<div class="muted small">${esc(l.range)}</div>` : ""}`;
-    const game = showGame ? `<td class="ap-game"><button type="button" class="linkish" data-open="${esc(gi.g.id)}" title="Open this game">${esc(gi.match)}</button><div class="muted small">${gi.dayTxt} ${esc(clock(gi.when))}</div></td>` : "";
-    return `<tr><td class="muted">${i + 1}</td><td class="lt-leg">${bet}</td>${game}
-      <td><b>${pct(l.p)}</b></td><td>${cents(l.price)}${l.bid != null ? `<div class="muted small">bid ${cents(l.bid)}</div>` : ""}</td>
-      <td class="edge-good">+${Math.round(l.edge * 100)}</td><td class="edge-good">+${Math.round((l.p / l.price - 1) * 100)}%</td></tr>`;
-  }
-
-  function table(rows, showGame) {
-    return `<div class="table-wrap"><table class="lotto-t under-t ap-t">
-      <thead><tr><th>#</th><th class="lt-leg">Bet</th>${showGame ? `<th class="ap-game">Game</th>` : ""}<th>Model</th><th>Price</th><th title="Model chance minus price, in cents">Edge</th><th title="Expected profit per $1 if the model is right">Return</th></tr></thead>
-      <tbody>${rows.map((l, i) => row(l, i, showGame)).join("")}</tbody></table></div>`;
-  }
+  const gameCell = (l) => `<td class="ap-game"><button type="button" class="linkish" data-open="${esc(l.gi.g.id)}" title="Open this game">${esc(l.gi.match)}</button><div class="muted small">${l.gi.dayTxt} ${esc(clock(l.gi.when))}</div></td>`;
 
   async function render(el, { games, adapter, onOpen, sport }) {
     const token = (el._apToken = {});
@@ -104,17 +93,27 @@ const ALLPROPS = (() => {
       : "No game's prices are open yet.";
 
     const chips = infos.map((i) => `<button type="button" class="note-chip ap-chip ${i.rows.length ? "good" : ""}" data-open="${esc(i.g.id)}" title="${esc(i.why || "Open this game")}"><b>${esc(i.match)}</b> ${i.dayTxt} ${esc(clock(i.when))} · ${esc(i.status)}</button>`).join("");
-    const intro = `<div class="muted small">Single bets where Polymarket's ask is below the model's chance by at least ${Math.round(BASKETS.UNDER_MIN_EDGE * 100)}¢, pulled from every ${esc(sport)} game today and tomorrow. Same rules as each game's Underpriced props section: real listed lines only, each takes a $${BASKETS.STAKE} bet near the price shown, one row per line ladder, long shots under ${Math.round(BASKETS.LOTTO_MAX * 100)}¢ left out. Player props show the player's team in brackets. Click a game to open it.</div>`;
+    const intro = `<div class="muted small vet-rules">${VET.RULES}</div><div class="muted small">Single bets where Polymarket's ask is below the model's chance by at least ${Math.round(BASKETS.UNDER_MIN_EDGE * 100)}¢, pulled from every ${esc(sport)} game today and tomorrow. Same rules as each game's Underpriced props section: real listed lines only, each takes a $${BASKETS.STAKE} bet near the price shown, one row per line ladder, long shots under ${Math.round(BASKETS.LOTTO_MAX * 100)}¢ left out. Player props show the player's team in brackets. Click a game to open it.</div>`;
     const sorter = `<div class="ap-sort"><span class="muted small">Order:</span>
       <button type="button" class="chip" data-ap-sort="best" aria-pressed="${sortMode === "best"}">Best first</button>
       <button type="button" class="chip" data-ap-sort="game" aria-pressed="${sortMode === "game"}">By game</button></div>`;
 
+    // the price-history check needs the network, so run it only on rows that could be shown
     let body;
     if (!all.length) body = `<div class="empty">${blocked ? "No prices to compare: Polymarket is blocked here." : "Nothing underpriced right now. Polymarket posts NBA player props late (often only on game day), so check back closer to the start."}</div>`;
-    else if (sortMode === "game") body = infos.filter((i) => i.rows.length).map((i) => `<div class="ap-gamehead"><button type="button" class="linkish" data-open="${esc(i.g.id)}"><b>${esc(i.match)}</b></button> <span class="muted small">${i.dayTxt} ${esc(clock(i.when))} · ${i.rows.length} underpriced</span></div>${table(i.rows, false)}`).join("");
-    else {
-      const top = best(all);
-      body = table(top, true) + (all.length > top.length ? `<div class="note">Showing the best ${top.length} of ${all.length}, with at most ${PER_GAME} per game and ${PER_KIND} of any one kind of bet so the list stays spread out. "By game" shows them all.</div>` : "");
+    else if (sortMode === "game") {
+      await VET.drift(all);
+      if (el._apToken !== token) return;
+      body = infos.filter((i) => i.rows.length).map((i) => `<div class="ap-gamehead"><button type="button" class="linkish" data-open="${esc(i.g.id)}"><b>${esc(i.match)}</b></button> <span class="muted small">${i.dayTxt} ${esc(clock(i.when))} · ${i.rows.length} underpriced, ${i.rows.filter((l) => l.vet?.level === "verified").length} verified</span></div>${BASKETS.underLists(i.rows)}`).join("");
+    } else {
+      const skipped = VET.sort(all.filter((l) => l.vet?.level === "skip")).slice(0, 20);
+      await VET.drift([...best(all, Math.round(SHOWN * 1.5)), ...skipped]);
+      if (el._apToken !== token) return;
+      const top = best(all), skip = VET.sort(all.filter((l) => l.vet?.level === "skip")).slice(0, 20);
+      const nv = top.filter((l) => l.vet.level === "verified").length;
+      body = `<div class="note">${nv} verified, ${top.length - nv} caution${skip.length ? `, ${all.filter((l) => l.vet?.level === "skip").length} failed the checks` : ""}. Ordered by the edge left after the checks, not the raw edge.</div>`
+        + BASKETS.underLists([...top, ...skip], gameCell)
+        + (all.length - skip.length > top.length ? `<div class="note">Showing the best ${top.length} that passed, with at most ${PER_GAME} per game and ${PER_KIND} of any one kind of bet so the list stays spread out. "By game" shows them all.</div>` : "");
     }
 
     el.innerHTML = head(status, true) + `<div class="ap-chips note-chips">${chips}</div>` + intro + sorter + body;

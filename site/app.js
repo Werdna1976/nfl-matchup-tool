@@ -797,6 +797,23 @@ function basketAdapter(g) {
     prob: (pl, k, line) => (k === "anytd" ? probs({ mean: lam(pl), sd: Math.sqrt(lam(pl)), dist: "poisson" }, line) : pl.d[k] ? probs(pl.d[k], line) : null),
     tags: (pl, k) => PM_TAGS[k] || [],
     load: (pl, k) => ({ ...(PM_LOAD[k] || { b: 0.3, m: 0, pass: 0 }), w: 0 }),
+    // for the checks in vet.js: the chance with his volume times r, his projection, the model's track record
+    scaled: (pl, k, line, r) => {
+      if (k === "anytd") { const l = lam(pl) * r; return probs({ mean: l, sd: Math.sqrt(l), dist: "poisson" }, line); }
+      if (!pl.d[k]) return null;
+      const d = JSON.parse(JSON.stringify(pl.d[k])); ROLES.scale(d, r); return probs(d, line);
+    },
+    mean: (pl, k) => (k === "anytd" ? null : pl.d[k]?.mean ?? null),
+    calib: (k) => BACKTEST?.calib?.[k] || null,
+    person: (pid) => DATA.players[pid],
+    // questionable teammates big enough to change his game: the QB, or a lead back or top target at his position
+    mates: (pl) => (g.players[pl.team] || []).filter((pid) => pid !== pl.pid).map((pid) => DATA.players[pid]).filter((m) => {
+      if (!m || !/question/i.test(m.inj?.status || "")) return false;
+      const d = m.proj[g.id] || {};
+      if (m.pos === "QB") return pl.pos !== "QB" && (d.att?.mean || 0) >= 20;
+      const same = m.pos === pl.pos || (["WR", "TE"].includes(m.pos) && ["WR", "TE"].includes(pl.pos));
+      return same && ((d.tgt?.mean || 0) >= 6 || (d.car?.mean || 0) >= 12);
+    }).map((m) => `${m.name} (${m.pos})`),
     duo: { a: "qb", b: "rec", title: (t) => `${t} QB and his top target connect`, blurb: (t) => `The ${t} passing game takes off: the quarterback's yards and his favorite receiver's numbers rise together.` },
     carry: { tag: "skill", title: (t) => `Two playmakers carry the ${t}`, blurb: (t) => `A lead back and a receiver (or two receivers) both have big days for the ${t}.` },
     runTags: ["skill", "qb"], scoreTags: ["score", "skill"],

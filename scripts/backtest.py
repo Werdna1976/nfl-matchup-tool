@@ -36,6 +36,10 @@ def run(season, first_week=4, data=None, prev=None):
                          "cdf": cdf(g.home_score + g.away_score, gm["total"]),
                          "cdf_lo": cdf(g.home_score + g.away_score - 1e-9, gm["total"]),
                          "pred": gm["total"]["mean"], "base": g.total_line})
+            margin = g.home_score - g.away_score
+            rows.append({"stat": "game_margin", "pos": "GAME", "week": W, "actual": margin,
+                         "cdf": cdf(margin, gm["margin"]), "cdf_lo": cdf(margin - 1e-9, gm["margin"]),
+                         "pred": gm["margin"]["mean"], "base": g.spread_line})
             for tm, opp, sign in ((g.home_team, g.away_team, 1), (g.away_team, g.home_team, -1)):
                 if tm not in teams or opp not in teams:
                     continue
@@ -67,6 +71,8 @@ def _overlap(a, b, lo, hi):
 def summarize(rows):
     by = {}
     for r in rows:
+        if r["stat"] == "game_margin":
+            continue
         key = "Game total points" if r["stat"] == "game_total" else LABELS[r["stat"]]
         by.setdefault(key, []).append(r)
     out = []
@@ -84,11 +90,43 @@ def summarize(rows):
     return sorted(out, key=lambda o: order.index(o["stat"]))
 
 
+# Site keys for the calibration curves (the stat columns' short names, plus the game lines)
+CALIB_KEYS = {**B.STAT_KEYS, "game_total": "total", "game_margin": "margin"}
+GRID = [i / 20 for i in range(21)]
+
+
+def calibration(rows):
+    """How often results really landed below each point of the model's range, per stat.
+
+    For each stat, c[i] is the share of past results that fell at or below the model's
+    (5 * i)th percentile. A perfect model has c[i] = i / 20. The site reads it to correct a
+    model chance before comparing it with a price: if the model said "60% over" and only 54%
+    of those went over, the bet is worth 54%, not 60%. Whole-number results that sit on a
+    percentile count partly on each side.
+    """
+    by = {}
+    for r in rows:
+        by.setdefault(CALIB_KEYS[r["stat"]], []).append(r)
+    out = {}
+    for key, rs in by.items():
+        n = len(rs)
+        c = [round(sum(_overlap(r["cdf_lo"], r["cdf"], 0.0, u) for r in rs) / n, 4) for u in GRID]
+        out[key] = {"n": n, "c": c}
+    return out
+
+
 if __name__ == "__main__":
     import datetime as dt
     season = int(sys.argv[1]) if len(sys.argv) > 1 else dt.date.today().year
     rows = run(season)
     summary = summarize(rows)
+    # the calibration curves also use last season, so each stat has thousands of results behind it
+    try:
+        older = run(season - 1)
+    except Exception as e:  # last season's files can fail to download; this season alone still works
+        print("last season's backtest unavailable:", e)
+        older = []
+    calib = calibration(rows + older)
     for s in summary:
         print(f"{s['stat']:20s} n={s['n']:4d}  in80={s['in80']:.2f}  in50={s['in50']:.2f}  "
               f"above90={s['above90']:.3f}  above95={s['above95']:.3f}  "
@@ -96,5 +134,6 @@ if __name__ == "__main__":
     out = os.path.join(os.path.dirname(__file__), "..", "site", "data", "backtest.json")
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, "w") as f:
-        json.dump({"season": season, "summary": summary,
+        json.dump({"season": season, "summary": summary, "calib": calib,
+                   "calib_seasons": [season - 1, season] if older else [season],
                    "note": "Projections rebuilt each week using only earlier games."}, f)

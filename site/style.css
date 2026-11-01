@@ -266,3 +266,20 @@ td.out-row { text-align: left; white-space: normal; color: var(--muted); font-si
 .ap-sort { display: flex; align-items: center; gap: 6px; margin: 10px 0 6px; }
 .ap-t .ap-game { text-align: left; white-space: nowrap; }
 .ap-gamehead { margin: 14px 0 4px; }
+
+/* pressure test on underpriced props (vet.js) */
+.vet-cell { white-space: nowrap; }
+.vet-badge { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 12px; font-weight: 600; border: 1px solid currentColor; }
+.vet-badge.vet-verified { color: var(--good); }
+.vet-badge.vet-caution { color: var(--warn); }
+.vet-badge.vet-skip { color: var(--bad); }
+.vet-why { white-space: normal; list-style: none; margin: 4px 0 0; padding: 0; font-size: 12px; line-height: 1.35; }
+.vet-why li { margin: 2px 0; }
+.vet-why li.vet-ok { color: var(--muted); }
+.vet-why li.vet-ok span { color: var(--good); }
+.vet-why li.vet-warn span { color: var(--warn); }
+.vet-why li.vet-bad span { color: var(--bad); }
+.vet-rules { margin: 4px 0 6px; }
+.vet-skipped { margin-top: 8px; }
+.vet-skipped summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+tr.vet-row-skip td { opacity: .75; }
