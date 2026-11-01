@@ -812,7 +812,8 @@ function basketAdapter(g) {
     statKey: (type, text) => PM_STATS[type] || PM_STATS[text] || null,
     statLabel: (k) => (STATS[k].parts ? STATS[k].short : STATS[k].label.toLowerCase()),
     storyKeys: (pl) => Object.keys(big).filter((k) => pl.d[k]?.mean >= big[k]),
-    lineAt: (pl, k, q) => Math.floor(quantile(q, pl.d[k])) + 0.5,
+    // a line on Polymarket's own ladder (5s for points and PRA, 2s for rebounds and assists) near the q-th quantile
+    lineAt: (pl, k, q) => { const step = stepFor(k, pl.d[k]); return Math.max(step, Math.round(quantile(q, pl.d[k]) / step) * step) - 0.5; },
     mainLine: (pl, k) => Math.floor(pl.d[k].mean) + 0.5,
     prob: (pl, k, line) => (pl.d[k] ? probs(pl.d[k], line) : null),
     tags: (pl, k) => PM_TAGS[k] || [],
@@ -891,10 +892,11 @@ function renderFinder(g) {
 
 // ---------------------------------------------------------------- odds ladders
 
-// Polymarket-style steps: 5 for points and point combos of good scorers, 2 for lower ones,
-// 1 for rebounds, assists, threes, steals, blocks, and turnovers
+// Polymarket's steps: 5 for points and point combos, 2 for rebounds, assists, and rebounds + assists,
+// 1 for threes, steals, blocks, and turnovers
 function stepFor(k, d) {
-  if (k === "pts" || k === "pra" || k === "pr" || k === "pa") return d.mean >= 15 ? 5 : 2;
+  if (k === "pts" || k === "pra" || k === "pr" || k === "pa") return 5;
+  if (k === "reb" || k === "ast" || k === "ra") return 2;
   return 1;
 }
 

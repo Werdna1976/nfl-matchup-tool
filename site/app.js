@@ -739,7 +739,12 @@ function basketAdapter(g) {
     statKey: (type, text) => PM_STATS[type] || PM_STATS[text] || null,
     statLabel: (k) => (k === "anytd" ? "touchdowns" : STATS[k].label.toLowerCase()),
     storyKeys: (pl) => (KEYS[pl.pos] || []).filter((k) => (k === "anytd" ? lam(pl) >= 0.25 : pl.d[k]?.mean >= (MIN_STORY[k] || 0))),
-    lineAt: (pl, k, q) => (k === "anytd" ? (q >= 0.8 ? 1.5 : 0.5) : k === "ptd" ? Math.max(0.5, Math.floor(quantile(q, pl.d[k])) + 0.5) : Math.floor(quantile(q, pl.d[k])) + 0.5),
+    // a line on Polymarket's own ladder (25 passing yards, 10 or 5 rushing/receiving, 1 for counts) near the q-th quantile
+    lineAt: (pl, k, q) => {
+      if (k === "anytd") return q >= 0.8 ? 1.5 : 0.5;
+      const step = stepFor(k, pl, pl.d[k]);
+      return Math.max(step, Math.round(quantile(q, pl.d[k]) / step) * step) - 0.5;
+    },
     mainLine: (pl, k) => (k === "anytd" ? 0.5 : k === "ptd" ? 1.5 : Math.floor(quantile(0.5, pl.d[k])) + 0.5),
     prob: (pl, k, line) => (k === "anytd" ? probs({ mean: lam(pl), sd: Math.sqrt(lam(pl)), dist: "poisson" }, line) : pl.d[k] ? probs(pl.d[k], line) : null),
     tags: (pl, k) => PM_TAGS[k] || [],
