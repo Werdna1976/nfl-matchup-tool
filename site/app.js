@@ -744,9 +744,9 @@ function renderSpots(g) {
       }
     }
   }
-  ROLES.spotsPanel($("#spots"), ROLES.spots(cand), {
+  ROLES.spotsPanel($("#spots"), ROLES.spots(cand, (c) => stepFor(c.k, c.p, c.d)), {
     dec: (k) => STATS[k].dec,
-    onAdd: (it) => addLeg({ label: `${it.p.name} over ${it.line} ${it.label.toLowerCase()}`, p: it.over, game: g.id }),
+    onAdd: (it) => addLeg({ label: `${it.p.name} ${it.line + 0.5}+ ${it.label.toLowerCase()}`, p: it.over, game: g.id }),
   });
   $("#spots").querySelectorAll("tr[data-pid]").forEach((tr) => tr.onclick = () => openPlayer(tr.dataset.pid, g));
 }
@@ -928,10 +928,11 @@ function renderTds(g) {
 // ---------------------------------------------------------------- odds ladders
 
 // Polymarket's yardage steps: 25 for QB passing, 10 for lead backs and good receivers, 5 for TEs and depth receivers
+// (the base grid is in steps.js; a 10-yard ladder still sits on its 5-yard grid)
 function stepFor(k, p, d) {
-  if (k === "pyd") return 25;
-  if (k === "ryd" || k === "yds" || k === "rry") return (p.pos !== "TE" && d.mean >= 40) || d.mean >= 60 ? 10 : 5;
-  return 1;
+  const g = STEPS.grid("nfl", k);
+  if (g === 5) return (p.pos !== "TE" && d.mean >= 40) || d.mean >= 60 ? 10 : 5;
+  return g;
 }
 
 // The line on a step-sized ladder (X+ = over X - 0.5) whose over is closest to 50%.
