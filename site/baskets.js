@@ -74,7 +74,9 @@ const BASKETS = (() => {
     const day = A.gameDay(g), first = addDays(day, -A.daysBefore), today = etDay(Date.now());
     if (A.isPost(g)) return { open: false, why: "This game is over, so there's nothing left to bet." };
     if (A.isLive(g)) return { open: false, why: "This game is under way. Polymarket's prices now move with the score, and the model is pre-game, so prices aren't pulled." };
-    if (today < first) return { open: false, why: `Polymarket prices are pulled ${A.daysBefore ? "from the day before kickoff" : "on game day"}, starting ${niceDay(first)}.` };
+    // open on game day (NBA) or the day before (NFL), or any time the game starts within 24 hours
+    const soon = A.kickoff(g) - Date.now() < 24 * 3600 * 1000;
+    if (today < first && !soon) return { open: false, why: `Polymarket prices are pulled ${A.daysBefore ? "from the day before kickoff" : "on game day"} or within 24 hours of the start, starting ${niceDay(first)}.` };
     return { open: true };
   }
 
@@ -634,7 +636,7 @@ const BASKETS = (() => {
 
     simulate(A, g, legs);
     const baskets = pickSix(A, g, legs, priced);
-    const lotto = lotteryHtml(lottery(legs, priced), priced);
+    const lotto = underpricedHtml(legs, priced) + lotteryHtml(lottery(legs, priced), priced);
     el.innerHTML = head(status, win.open) + (baskets.length
       ? `<div class="baskets">${baskets.map((b) => card(b, priced)).join("")}</div>`
       : "") + (realCount(baskets) < SHOWN ? `<div class="note">Only ${realCount(baskets)} of 6 storylines could be built here: the rest happen in fewer than 1 game in 5, or couldn't be built without longshot legs, stacked bets${priced ? ", or markets too thin for a $" + STAKE + " bet" : ""} while paying more than 4x net.</div>` : "") + lotto + foot(priced);
@@ -681,6 +683,26 @@ const BASKETS = (() => {
     for (const gr of groups) if (picked.length < 7 && !picked.includes(gr) && fresh(gr)) picked.push(gr);
     picked.sort((x, y) => x.ix.length - y.ix.length || y.score - x.score);
     return { list, groups: picked };
+  }
+
+  // Single bets, no combining: every Polymarket market (props and game lines) whose price is below
+  // the model's chance, biggest edge first. Same filters as the baskets: real listed lines, $20 of
+  // depth near the ask, no placeholder quotes. Long shots are left to the lottery section.
+  const UNDER_SHOWN = 15, UNDER_MIN_EDGE = 0.03;
+  function underpricedHtml(legs, priced) {
+    const box = (body) => `<div class="lotto"><h3>Underpriced props</h3>${body}</div>`;
+    if (!priced) return box(`<div class="empty">Single bets priced below the model's chance show here once Polymarket has player props for this game (game day for the NBA, the day before for the NFL, or within 24 hours of the start).</div>`);
+    const list = legs.filter((l) => l.price > LOTTO_MAX && l.edge >= UNDER_MIN_EDGE).sort((a, b) => b.edge - a.edge).slice(0, UNDER_SHOWN);
+    if (!list.length) return box(`<div class="empty">Nothing on Polymarket for this game is priced at least ${Math.round(UNDER_MIN_EDGE * 100)}¢ below the model's chance right now.</div>`);
+    const rows = list.map((l, i) => `<tr><td class="muted">${i + 1}</td>
+      <td class="lt-leg">${l.url ? `<a href="${esc(l.url)}" target="_blank" rel="noopener" title="${esc(l.src || "")}">${esc(l.label)}</a>` : esc(l.label)}${l.q ? ` <span class="badge q">${esc(l.q)}</span>` : ""}${l.flags.length ? ` ${l.flags.map((f) => `<span class="badge q">${esc(f)}</span>`).join(" ")}` : ""}</td>
+      <td><b>${pct(l.p)}</b></td><td>${cents(l.price)}${l.bid != null ? `<div class="muted small">bid ${cents(l.bid)}</div>` : ""}</td>
+      <td class="edge-good">+${Math.round(l.edge * 100)}</td><td class="edge-good">+${Math.round((l.p / l.price - 1) * 100)}%</td></tr>`).join("");
+    return box(`<div class="muted small">Single bets, no parlay needed: Polymarket's ask is below the model's chance by at least ${Math.round(UNDER_MIN_EDGE * 100)}¢, biggest gap first. Each can take a $${STAKE} bet near the price shown. Long shots under ${Math.round(LOTTO_MAX * 100)}¢ are in Lottery tickets below.</div>
+      <div class="table-wrap"><table class="lotto-t">
+        <thead><tr><th>#</th><th class="lt-leg">Bet</th><th>Model</th><th>Price</th><th title="Model chance minus price, in cents">Edge</th><th title="Expected profit per $1 if the model is right">Return</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>`);
   }
 
   // One compact table: the long shots on the left, and a column per group (A-G) on the right with
