@@ -236,3 +236,8 @@ td.out-row { text-align: left; white-space: normal; color: var(--muted); font-si
 @media (max-width: 420px) { .baskets { grid-template-columns: 1fr; } }
 .basket td, .basket th { padding: 4px 6px; vertical-align: top; }
 .basket td:first-child { white-space: normal; }
+.lotto { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 10px; }
+.lotto h3 { margin: 0 0 4px; }
+.lotto-pairs { margin: 4px 0 0; padding-left: 18px; }
+.basket .theme { margin: 4px 0 2px; }
+.lotto td:nth-child(2), .lotto th:nth-child(2) { text-align: left; }
