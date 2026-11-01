@@ -31,6 +31,8 @@ Built for picking alt lines and parlay legs on Polymarket.
 - **Parlay slip**: add legs, type in Polymarket prices, see the combined chance and whether the price looks good.
 - **How the model works**: plain-language explanation plus its track record on past weeks this season.
 
+The NFL player model blends recent form with last season, sets each range from the size of the role (bigger roles swing less), and mixes "normal" games with occasional "dud" games so the upper tail isn't stretched. Its weights live in `scripts/model_params.json`, fitted on 2022–2024 game logs by `scripts/fit_model.py` and checked on 2025 and 2026: about 10% of results land above its 90th percentile and 5% above its 95th, top players included. Refit once a season with `python scripts/fit_model.py` (takes about 15 minutes).
+
 ## NBA page
 
 **Live site:** https://werdna1976.github.io/nfl-matchup-tool/nba.html
