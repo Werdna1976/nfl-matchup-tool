@@ -371,9 +371,11 @@ const BASKETS = (() => {
     const pr = A.prob(pl, key, line);
     if (!pr) return null;
     const p = side === "over" ? pr.over : pr.under;
+    const who = `${pl.name} [${pl.team}]`;
     return {
       kind, pid, key, line, side, p, team: pl.team, core: pl.core, story: A.storyKeys(pl).includes(key), tags: A.tags(pl, key), name: pl.name, q: pl.q,
-      label: key === "anytd" && line < 1 ? (side === "over" ? `${pl.name} anytime TD` : `${pl.name} no touchdown`) : `${pl.name} ${lineTxt(side, line)} ${A.statLabel(key)}`,
+      // the player's team in brackets, like "Desmond Bane [ORL] 4+ 3-pointers made"
+      label: key === "anytd" && line < 1 ? (side === "over" ? `${who} anytime TD` : `${who} no touchdown`) : `${who} ${lineTxt(side, line)} ${A.statLabel(key)}`,
     };
   }
 
@@ -809,5 +811,5 @@ const BASKETS = (() => {
       Every basket includes at least one bet on the game itself, uses one leg per player, one bet on the winner (spread or moneyline), and one total, and skips legs the model or the market gives under about a 40% chance. Players ruled Out or Doubtful are never used; Questionable ones are marked.</div>`;
   }
 
-  return { underpriced, render, clear, pickSix, pullWindow, parseMarket, simulate, joint, best, stories, legsFromModel, legsFromMarkets, priceBooks, eventMatches, N };
+  return { underpriced, pull, STAKE, UNDER_MIN_EDGE, LOTTO_MAX, render, clear, pickSix, pullWindow, parseMarket, simulate, joint, best, stories, legsFromModel, legsFromMarkets, priceBooks, eventMatches, N };
 })();
