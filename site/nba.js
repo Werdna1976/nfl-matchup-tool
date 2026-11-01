@@ -843,6 +843,17 @@ function basketAdapter(g) {
     prob: (pl, k, line) => (pl.d[k] ? probs(pl.d[k], line) : null),
     tags: (pl, k) => PM_TAGS[k] || [],
     load: (pl, k) => ({ b: PM_LOAD[k] ?? 0.2, m: 0, pass: 0, w: pl.d.min.mean >= 28 ? -0.25 : pl.d.min.mean < 18 ? 0.15 : 0 }),
+    // for the checks in vet.js: the chance with his minutes times r, his projection, the model's track record
+    scaled: (pl, k, line, r) => {
+      if (!pl.d[k]) return null;
+      const d = JSON.parse(JSON.stringify(pl.d[k])); ROLES.scale(d, r); return probs(d, line);
+    },
+    mean: (pl, k) => pl.d[k]?.mean ?? null,
+    calib: (k) => BACKTEST?.calib?.[k] || null,
+    person: (pid) => DATA.players[pid],
+    // questionable rotation teammates (24+ minutes): if they sit, his minutes and shots change
+    mates: (pl) => (g.players[pl.team] || []).filter((pid) => pid !== pl.pid).map((pid) => DATA.players[pid])
+      .filter((m) => m && /question/i.test(m.inj?.status || "") && (m.proj[g.id]?.min?.mean || 0) >= 24).map((m) => `${m.name} (${m.pos})`),
     duo: { a: "score", b: "help", title: (t) => `Big night for a ${t} scorer and a playmaker`, blurb: (t) => `One ${t} player piles up points while a teammate racks up assists or rebounds. Both ride the same good night for the offense.` },
     carry: { tag: "big", title: (t) => `Two players carry the ${t}`, blurb: (t) => `Two ${t} regulars fill the stat sheet (points, rebounds, and assists together).` },
     runTags: ["score", "big"], scoreTags: ["score", "big"],

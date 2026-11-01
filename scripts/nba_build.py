@@ -715,6 +715,32 @@ def summarize(df, calib):
     return out
 
 
+def calib_curves(df, calib):
+    """Share of past results at or below each 5% step of the model's (tuned) range, per stat.
+
+    c[i] is the share that landed at or below the model's (5 * i)th percentile; a perfect model
+    has c[i] = i / 20. The site uses it to correct a model chance before comparing it with a
+    price. Whole-number results on a percentile count partly on each side, as in _inside.
+    """
+    out = {}
+    for k, g in df.groupby("stat"):
+        if len(g) < 200:
+            continue
+        g = g.sample(min(len(g), 20000), random_state=2)
+        sd = g["sd"].to_numpy() * calib.get(k, 1.0)
+        mean, act, disc = g["mean"].to_numpy(), g.actual.to_numpy(), g.discrete.to_numpy()
+        a = np.where(disc, cdf_vec(act - 1, mean, sd, True), cdf_vec(act - 0.5, mean, sd, disc))
+        b = cdf_vec(act + 0.5, mean, sd, disc)
+        b = np.where(disc, cdf_vec(act, mean, sd, True), b)
+        width = np.maximum(b - a, 1e-12)
+        c = []
+        for u in [i / 20 for i in range(21)]:
+            share = np.where(b - a < 1e-9, (b <= u).astype(float), np.clip((u - a) / width, 0, 1))
+            c.append(round(float(share.mean()), 4))
+        out[k] = {"n": int(len(g)), "c": c}
+    return out
+
+
 # ---------------------------------------------------------------- assemble
 
 def build(today, run_backtest=True):
@@ -796,6 +822,7 @@ def build(today, run_backtest=True):
             summary = summarize(df[df.date >= cut], fit_half)
             calib = calibrate(df)
             bt = {"seasons": [season_label(season - 1), season_label(season)], "summary": summary,
+                  "calib": calib_curves(df, calib),
                   "note": "Projections rebuilt for past game days using only earlier games; ranges tuned on the "
                           "first half of those days and scored on the second half."}
             print("range multipliers:", calib)

@@ -302,7 +302,7 @@ const BASKETS = (() => {
         if (qt.book && pay - qt.ask >= 0.005) flags.push(`$${STAKE} fills at ${Math.round(pay * 100)}¢`);
         if (qt.ask - qt.bid >= WIDE) flags.push(`wide ${Math.round(qt.bid * 100)}/${Math.round(qt.ask * 100)}¢`);
         const src = `Polymarket market: "${m.q}" · buying "${m.outcomes[i]}" · best ask ${Math.round(qt.ask * 100)}¢${qt.bid != null ? `, best bid ${Math.round(qt.bid * 100)}¢` : ""} · ${qt.book ? "from the order book" : "from Polymarket's summary"}`;
-        legs.push({ ...leg, grp: group(leg), price, ask: qt.ask, bid: qt.bid, usd: qt.usd, flags, url: m.url, src, edge: leg.p - price });
+        legs.push({ ...leg, grp: group(leg), price, ask: qt.ask, bid: qt.bid, usd: qt.usd, flags, url: m.url, src, token: m.tokens[i], edge: leg.p - price });
       });
     }
     return legs;
@@ -636,9 +636,12 @@ const BASKETS = (() => {
     else if (!priced) status = `Polymarket isn't listing player props for this game yet${rec.events ? ` (found ${rec.events} event${rec.events > 1 ? "s" : ""}, but no player markets)` : ""}, checked ${new Date(rec.t).toLocaleTimeString()}. These use the model's own lines instead.`;
     else status = `${rec.src === "saved" ? `<b>Saved</b> Polymarket prices from ${new Date(rec.t).toLocaleTimeString()} (couldn't refresh, prices may have moved)` : `Polymarket prices as of <b>${new Date(rec.t).toLocaleTimeString()}</b> (updates every 2 minutes)`} · ${rec.markets.filter((m) => m.kind === "player").length} player markets${rec.book ? " · checked against the order book" : " · summary quotes (order book unavailable)"} · hover a leg to see the exact market`;
 
+    // the underpriced singles, each pressure-tested (vet.js); the price-history check needs the network
+    const under = priced ? underpriced(legs, (r) => VET.grade(r, { A, g, legs })) : [];
+    if (under.length) { await VET.drift(under); if (el._basketToken !== token) return; }
     simulate(A, g, legs);
     const baskets = pickSix(A, g, legs, priced);
-    const lotto = underpricedHtml(legs, priced) + lotteryHtml(lottery(legs, priced), priced);
+    const lotto = underpricedHtml(under, priced) + lotteryHtml(lottery(legs, priced), priced);
     el.innerHTML = head(status, win.open) + (baskets.length
       ? `<div class="baskets">${baskets.map((b) => card(b, priced)).join("")}</div>`
       : "") + (realCount(baskets) < SHOWN ? `<div class="note">Only ${realCount(baskets)} of 6 storylines could be built here: the rest happen in fewer than 1 game in 5, or couldn't be built without longshot legs, stacked bets${priced ? ", or markets too thin for a $" + STAKE + " bet" : ""} while paying more than 4x net.</div>` : "") + lotto + foot(priced);
@@ -695,7 +698,9 @@ const BASKETS = (() => {
   // stat): its best line, plus the range of lines on that ladder that are also underpriced.
   // Then a mix: one row per player, one per side of the game result (spread or moneyline), one per
   // total, and at most two of any one kind of bet (say, assists unders).
-  function underpriced(legs) {
+  // With a vet function (VET.grade, bound to the game), every ladder's row is checked first and the
+  // mix is built from the rows that pass, best adjusted edge first; rows that fail come after.
+  function underpriced(legs, vet = null) {
     const cheap = legs.filter((l) => l.price > LOTTO_MAX && l.edge >= UNDER_MIN_EDGE);
     const ladders = new Map();
     for (const l of cheap) {
@@ -704,12 +709,18 @@ const BASKETS = (() => {
       ladders.get(k).push(l);
     }
     const short = (l) => (l.kind === "spread" ? sgn(l.line) : l.kind === "ml" ? "win" : lineTxt(l.side, l.line));
-    const rows = [...ladders.values()].map((ls) => {
+    let rows = [...ladders.values()].map((ls) => {
       const top = ls.reduce((a, b) => (b.edge > a.edge ? b : a));
       const byLine = [...ls].sort((a, b) => a.line - b.line);
       const range = ls.length > 1 ? `Also cheap: ${short(byLine[0])} to ${short(byLine.at(-1))} (${ls.length} lines, +${Math.round(Math.min(...ls.map((l) => l.edge)) * 100)} to +${Math.round(top.edge * 100)})` : "";
       return { ...top, range };
     }).sort((a, b) => b.edge - a.edge);
+    let failed = [];
+    if (vet) {
+      rows = VET.sort(rows.map(vet));
+      failed = rows.filter((r) => r.vet.level === "skip");
+      rows = rows.filter((r) => r.vet.level !== "skip");
+    }
     const kindOf = (l) => (l.kind === "player" ? `${l.key}|${l.side}` : l.kind === "total" ? "total" : `result|${l.side}`);
     const used = new Map(), seen = new Set(), out = [];
     for (const r of rows) {
@@ -718,22 +729,33 @@ const BASKETS = (() => {
       if (seen.has(who) || n >= 2) continue;   // one row per player / result side / total, two of any kind
       out.push(r); seen.add(who); used.set(kindOf(r), n + 1);
     }
-    return out.sort((a, b) => b.edge - a.edge);
+    return vet ? [...out, ...failed.slice(0, UNDER_SHOWN)] : out.sort((a, b) => b.edge - a.edge);
   }
 
-  function underpricedHtml(legs, priced) {
+  // One row of the underpriced table (also used by the Best props page, with a Game column)
+  function underRow(l, i, game = "") {
+    return `<tr class="${l.vet ? `vet-row-${l.vet.level}` : ""}"><td class="muted">${i + 1}</td>
+      <td class="lt-leg">${l.url ? `<a href="${esc(l.url)}" target="_blank" rel="noopener" title="${esc(l.src || "")}">${esc(l.label)}</a>` : esc(l.label)}${l.q || l.flags.length ? `<div class="tags">${[l.q, ...l.flags].filter(Boolean).map((f) => `<span class="badge q">${esc(f)}</span>`).join(" ")}</div>` : ""}${l.range ? `<div class="muted small">${esc(l.range)}</div>` : ""}${VET.why(l)}</td>${game}
+      <td><b>${pct(l.p)}</b></td><td>${cents(l.price)}${l.bid != null ? `<div class="muted small">bid ${cents(l.bid)}</div>` : ""}</td>
+      <td class="edge-good">+${Math.round(l.edge * 100)}<div class="muted small">+${Math.round((l.p / l.price - 1) * 100)}%</div></td>${VET.cell(l)}</tr>`;
+  }
+  function underTable(rows, gameCol = null) {
+    return `<div class="table-wrap"><table class="lotto-t under-t${gameCol ? " ap-t" : ""}">
+      <thead><tr><th>#</th><th class="lt-leg">Bet</th>${gameCol ? `<th class="ap-game">Game</th>` : ""}<th>Model</th><th>Price</th><th title="Model chance minus price, in cents; below it, the expected profit per $1 if the model is right">Edge</th><th title="Pressure test: Verified, Caution or Skip, and the edge left after the checks">Check</th></tr></thead>
+      <tbody>${rows.map((l, i) => underRow(l, i, gameCol ? gameCol(l) : "")).join("")}</tbody></table></div>`;
+  }
+  // checked rows: the ones that pass first (by the edge left after checks), the Skips folded away below
+  function underLists(rows, gameCol = null) {
+    const sorted = VET.sort(rows), keep = sorted.filter((l) => l.vet?.level !== "skip"), skip = sorted.filter((l) => l.vet?.level === "skip");
+    return (keep.length ? underTable(keep, gameCol) : `<div class="empty">Nothing passed the checks right now.</div>`)
+      + (skip.length ? `<details class="vet-skipped"><summary>${skip.length} more failed the checks (likely news or model error, not a mispricing)</summary>${underTable(skip, gameCol)}</details>` : "");
+  }
+
+  function underpricedHtml(list, priced) {
     const box = (body) => `<div class="lotto"><h3>Underpriced props</h3>${body}</div>`;
     if (!priced) return box(`<div class="empty">Single bets priced below the model's chance show here once Polymarket has player props for this game (game day for the NBA, the day before for the NFL, or within 24 hours of the start).</div>`);
-    const list = underpriced(legs);
-    const rows = list.map((l, i) => `<tr><td class="muted">${i + 1}</td>
-      <td class="lt-leg">${l.url ? `<a href="${esc(l.url)}" target="_blank" rel="noopener" title="${esc(l.src || "")}">${esc(l.label)}</a>` : esc(l.label)}${l.q || l.flags.length ? `<div class="tags">${[l.q, ...l.flags].filter(Boolean).map((f) => `<span class="badge q">${esc(f)}</span>`).join(" ")}</div>` : ""}${l.range ? `<div class="muted small">${esc(l.range)}</div>` : ""}</td>
-      <td><b>${pct(l.p)}</b></td><td>${cents(l.price)}${l.bid != null ? `<div class="muted small">bid ${cents(l.bid)}</div>` : ""}</td>
-      <td class="edge-good">+${Math.round(l.edge * 100)}</td><td class="edge-good">+${Math.round((l.p / l.price - 1) * 100)}%</td></tr>`).join("");
-    return box(`<div class="muted small">Single bets, no parlay needed: Polymarket's ask is below the model's chance by at least ${Math.round(UNDER_MIN_EDGE * 100)}¢, biggest gap first. Each line ladder (a spread, a total, one player's stat) is one row: its best-priced line, with the range of lines that are also cheap. The list is spread across bet types and players rather than repeating one kind of mispricing. Each can take a $${STAKE} bet near the price shown. Long shots under ${Math.round(LOTTO_MAX * 100)}¢ are in Lottery tickets below.</div>
-      <div class="table-wrap"><table class="lotto-t under-t">
-        <thead><tr><th>#</th><th class="lt-leg">Bet</th><th>Model</th><th>Price</th><th title="Model chance minus price, in cents">Edge</th><th title="Expected profit per $1 if the model is right">Return</th></tr></thead>
-        <tbody>${rows}</tbody>
-      </table></div>`);
+    return box(`<div class="muted small">Single bets, no parlay needed: Polymarket's ask is below the model's chance by at least ${Math.round(UNDER_MIN_EDGE * 100)}¢. Each line ladder (a spread, a total, one player's stat) is one row: its best-priced line, with the range of lines that are also cheap. Each can take a $${STAKE} bet near the price shown. Long shots under ${Math.round(LOTTO_MAX * 100)}¢ are in Lottery tickets below.</div>
+      <div class="muted small vet-rules">${VET.RULES}</div>${list.length ? underLists(list) : `<div class="empty">Nothing underpriced right now.</div>`}`);
   }
 
   // One compact table: the long shots on the left, and a column per group (A-G) on the right with
@@ -811,5 +833,5 @@ const BASKETS = (() => {
       Every basket includes at least one bet on the game itself, uses one leg per player, one bet on the winner (spread or moneyline), and one total, and skips legs the model or the market gives under about a 40% chance. Players ruled Out or Doubtful are never used; Questionable ones are marked.</div>`;
   }
 
-  return { underpriced, pull, STAKE, UNDER_MIN_EDGE, LOTTO_MAX, render, clear, pickSix, pullWindow, parseMarket, simulate, joint, best, stories, legsFromModel, legsFromMarkets, priceBooks, eventMatches, N };
+  return { underpriced, underLists, pull, STAKE, UNDER_MIN_EDGE, LOTTO_MAX, render, clear, pickSix, pullWindow, parseMarket, simulate, joint, best, stories, legsFromModel, legsFromMarkets, priceBooks, eventMatches, N };
 })();
