@@ -100,26 +100,40 @@ const BASKETS = (() => {
     return LISTS[A.league].events;
   }
 
+  // Polymarket dates its slugs by the UTC day of the start, so a night game (8:20pm ET Sunday
+  // is 00:20 UTC Monday) is slugged with the next day: nfl-phi-was-2026-11-02 for a Nov 1 game.
+  // Both the local game day and the UTC day count.
+  function slugDays(A, g) {
+    const day = A.gameDay(g), k = A.kickoff(g);
+    const utc = isNaN(k) ? day : new Date(k).toISOString().slice(0, 10);
+    return [...new Set([day, utc])];
+  }
+
   function eventMatches(A, g, e) {
-    const day = A.gameDay(g), slug = String(e.slug || "").toLowerCase(), parts = slug.split("-");
-    const when = [e.startTime, e.eventDate, ...(e.markets || []).slice(0, 3).map((m) => m.gameStartTime)]
-      .map((t) => (t ? Date.parse(String(t).replace(" ", "T")) : NaN)).filter((t) => !isNaN(t));
-    // a dated slug must carry this game's date (teams can meet on back-to-back nights);
-    // otherwise the start time must be within 6 hours of tip-off or kickoff
-    const dayOk = /\d{4}-\d{2}-\d{2}/.test(slug) ? slug.includes(day) : when.some((t) => Math.abs(t - A.kickoff(g)) < 6 * 3600 * 1000);
+    const slug = String(e.slug || "").toLowerCase(), parts = slug.split("-");
+    const near = (list) => list.map((t) => (t ? Date.parse(String(t).replace(" ", "T").replace(/([+-]\d{2})$/, "$1:00")) : NaN)).filter((t) => !isNaN(t))
+      .map((t) => Math.abs(t - A.kickoff(g)) < 6 * 3600 * 1000);
+    // a dated slug must carry this game's date, local or UTC; since that lets a late game and the
+    // next day's game share a date, a market's own start time, when it has one, must also be
+    // within 6 hours of kickoff (teams can meet on back-to-back nights). An undated slug goes by
+    // the event's start time alone.
+    const starts = near((e.markets || []).slice(0, 3).map((m) => m.gameStartTime));
+    const dayOk = /\d{4}-\d{2}-\d{2}/.test(slug)
+      ? slugDays(A, g).some((d) => slug.includes(d)) && (!starts.length || starts.some(Boolean))
+      : [...starts, ...near([e.startTime, e.eventDate])].some(Boolean);
     const title = squash(`${e.title || ""} ${e.ticker || ""}`);
     const teamOk = (tm) => A.nicknames(tm).some((n) => title.includes(n)) || A.codes(tm).some((c) => parts.includes(c));
     return dayOk && teamOk(g.away) && teamOk(g.home);
   }
 
   async function findEvents(A, g) {
-    const day = A.gameDay(g), found = new Map();
+    const found = new Map();
     let reached = false;
-    outer: for (const a of A.codes(g.away)) for (const h of A.codes(g.home)) {
+    outer: for (const day of slugDays(A, g).reverse()) for (const a of A.codes(g.away)) for (const h of A.codes(g.home)) {
       try {
         const j = await getJson(`${GAMMA}/events?slug=${A.league}-${a}-${h}-${day}`);
         reached = true;
-        for (const e of j || []) found.set(String(e.id), e);
+        for (const e of j || []) if (!Array.isArray(e.markets) || eventMatches(A, g, e)) found.set(String(e.id), e);
         if (found.size) break outer;
       } catch (e) { /* try the next spelling */ }
     }
