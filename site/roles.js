@@ -82,16 +82,21 @@ const ROLES = (() => {
   // ---------------------------------------------------------------- best spots
 
   // Books set most player lines close to a player's recent average. Without real prop lines,
-  // that average (to the nearest .5) stands in for the line.
+  // the ladder rung nearest that average stands in for the line.
   const lastName = (n) => n.replace(/\s+(jr|sr|ii|iii|iv)\.?$/i, "").split(" ").slice(1).join(" ") || n;
-  const typicalLine = (vals) => Math.floor(vals.reduce((a, b) => a + b, 0) / vals.length) + 0.5;
+  // the Polymarket rung (steps.js) nearest that average: 4+ or 6+ rebounds, never 5+
+  const typicalLine = (vals, step) => {
+    const a = vals.reduce((x, y) => x + y, 0) / vals.length;
+    return step > 1 ? Math.max(step, Math.round((a + 0.5) / step) * step) - 0.5 : Math.floor(a) + 0.5;
+  };
 
-  // cand: [{p, k, d, label, vals, st, gid}] -> props with upside or a solid floor, best first
-  function spots(cand) {
+  // cand: [{p, k, d, label, vals, st, gid}] -> props with upside or a solid floor, best first.
+  // stepOf(c) = the step of that prop's Polymarket ladder
+  function spots(cand, stepOf = () => 1) {
     const out = [];
     for (const c of cand) {
       if (c.vals.length < 3) continue;
-      const line = typicalLine(c.vals), pr = probs(c.d, line);
+      const line = typicalLine(c.vals, stepOf(c)), pr = probs(c.d, line);
       const lift = c.d.mean / line - 1;
       const upside = lift >= 0.1 && pr.over >= 0.55;
       const safe = pr.over >= 0.6 && (c.st.cls === "s1" || c.st.cls === "s2");
@@ -111,11 +116,11 @@ const ROLES = (() => {
     el.innerHTML = `
       <div class="panel-head"><h2>Best spots</h2><span class="muted small"><b>Upside</b>: projection at least 10% above his usual line. <b>Safe floor</b>: a steady player the model likes to clear his usual line. Teammate injuries are built in.</span></div>
       ${items.length ? `<div class="table-wrap"><table>
-        <thead><tr><th>Player</th><th>Prop</th><th title="His recent average, to the nearest .5. Books usually set lines close to this.">Usual line</th><th>Projection</th><th>Chance over</th><th title="1 game in 5 goes below this, 1 in 10 goes above that">Bad night / big night</th><th>Why</th><th></th></tr></thead>
+        <thead><tr><th>Player</th><th>Prop</th><th title="The Polymarket rung nearest his recent average (X+ means X or more).">Usual line</th><th>Projection</th><th>Chance over</th><th title="1 game in 5 goes below this, 1 in 10 goes above that">Bad night / big night</th><th>Why</th><th></th></tr></thead>
         <tbody>${items.map((it, i) => `<tr class="click" data-pid="${it.pid}">
           <td><span class="pname">${esc(it.p.name)}</span><span class="pos-tag">${esc(it.tag)}</span><div>${it.upside ? `<span class="spot up">Upside</span>` : ""}${it.safe ? `<span class="spot safe">Safe floor</span>` : ""}</div></td>
           <td>${esc(it.label)}</td>
-          <td>${it.line}</td>
+          <td>${it.line + 0.5}+</td>
           <td><b>${it.d.mean.toFixed(dec(it.k))}</b>${mark(it.p, it.gid, it.k, dec(it.k))}</td>
           <td><b>${pct(it.over)}</b> <span class="muted small">${cents(it.over)}</span></td>
           <td>${Math.round(it.floor)} / ${Math.round(it.ceil)}</td>

@@ -200,7 +200,8 @@ const BASKETS = (() => {
     // so the under reads "3 or fewer" and not a "4 or fewer" that isn't on the board.
     const plus = /(?<![\d.])(\d+)\s*\+|at least\s+(\d+)(?![\d.])/i.exec(`${q} ${m.groupItemTitle || ""}`);
     if (plus) line = Number(plus[1] ?? plus[2]) - 0.5;
-    else if (Number.isInteger(line) && line >= 1 && outcomes.some((o) => /^yes$/i.test(o))) line -= 0.5;
+    // Polymarket has no pushes, so a whole-number line on a player prop is the N+ threshold too
+    else if (Number.isInteger(line) && line >= 1) line -= 0.5;
     const pl = roster.get(nameKey(name)) || roster.get(`${nameKey(name.split(" ")[0]).slice(0, 1)}|${nameKey(name.split(" ").slice(1).join(" "))}`);
     if (!pl) return null;
     let sides = outcomes.map(ouSide);
@@ -379,6 +380,8 @@ const BASKETS = (() => {
     }
     const pl = A.player(pid);
     if (!pl || pl.skip) return null;   // ruled out or doubtful: never a leg
+    // only rungs Polymarket lists (steps.js): no 5+ rebounds when the board is 4+ and 6+
+    if (key !== "anytd" && !STEPS.onLadder(A.league, key, line)) return null;
     const pr = A.prob(pl, key, line);
     if (!pr) return null;
     const p = side === "over" ? pr.over : pr.under;

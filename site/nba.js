@@ -804,9 +804,9 @@ function renderSpots(g) {
       }
     }
   }
-  ROLES.spotsPanel($("#spots"), ROLES.spots(cand), {
+  ROLES.spotsPanel($("#spots"), ROLES.spots(cand, (c) => stepFor(c.k, c.d)), {
     dec: (k) => STATS[k].dec,
-    onAdd: (it) => addLeg({ label: `${it.p.name} over ${it.line} ${it.label.toLowerCase()}`, p: it.over, game: g.id }),
+    onAdd: (it) => addLeg({ label: `${it.p.name} ${it.line + 0.5}+ ${it.label.toLowerCase()}`, p: it.over, game: g.id }),
   });
   $("#spots").querySelectorAll("tr[data-pid]").forEach((tr) => tr.onclick = () => openPlayer(tr.dataset.pid, g));
 }
@@ -941,13 +941,9 @@ function renderFinder(g) {
 
 // ---------------------------------------------------------------- odds ladders
 
-// Polymarket's steps: 5 for points and point combos, 2 for rebounds, assists, and rebounds + assists,
-// 1 for threes, steals, blocks, and turnovers
-function stepFor(k, d) {
-  if (k === "pts" || k === "pra" || k === "pr" || k === "pa") return 5;
-  if (k === "reb" || k === "ast" || k === "ra") return 2;
-  return 1;
-}
+// Polymarket's steps (5s for points and point combos, 2s for rebounds and assists, 1s for the rest)
+// live in steps.js, shared with every bet list
+function stepFor(k, d) { return STEPS.grid("nba", k); }
 
 // The line on a step-sized ladder (X+ = over X - 0.5) whose over is closest to 50%.
 // Step 1 keeps the plain midpoint (floor of the mean + 0.5).
