@@ -190,6 +190,12 @@ const BASKETS = (() => {
     if (!key) return null;
     if (line == null) line = key === "anytd" ? 0.5 : null;
     if (line == null) return null;
+    // A ladder market ("4+ rebounds", Yes/No) is over 3.5: buying No means 3 or fewer. If
+    // Polymarket's line field carries the threshold itself (4) or the text says "4+", use 3.5,
+    // so the under reads "3 or fewer" and not a "4 or fewer" that isn't on the board.
+    const plus = /(?<![\d.])(\d+)\s*\+|at least\s+(\d+)(?![\d.])/i.exec(`${q} ${m.groupItemTitle || ""}`);
+    if (plus) line = Number(plus[1] ?? plus[2]) - 0.5;
+    else if (Number.isInteger(line) && line >= 1 && outcomes.some((o) => /^yes$/i.test(o))) line -= 0.5;
     const pl = roster.get(nameKey(name)) || roster.get(`${nameKey(name.split(" ")[0]).slice(0, 1)}|${nameKey(name.split(" ").slice(1).join(" "))}`);
     if (!pl) return null;
     let sides = outcomes.map(ouSide);
