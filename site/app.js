@@ -15,15 +15,16 @@ const STATS = {
   rec: { label: "Receptions", short: "Rec", dec: 1 },
   yds: { label: "Receiving yards", short: "Rec yds", dec: 0 },
   td: { label: "Receiving TDs", short: "Rec TD", dec: 2, count: true },
+  rry: { label: "Rush + rec yards", short: "Rush+rec yds", dec: 0 },
 };
 const POS_STATS = {
   QB: ["att", "cmp", "pyd", "ptd", "int", "car", "ryd", "rtd"],
-  RB: ["car", "ryd", "rtd", "tgt", "rec", "yds"],
+  RB: ["car", "ryd", "rtd", "tgt", "rec", "yds", "td", "rry"],
   WR: ["tgt", "rec", "yds", "td"],
   TE: ["tgt", "rec", "yds", "td"],
 };
 // the props worth betting, by position, for the alt-line finder
-const FEATURED = { QB: ["att", "cmp", "pyd", "ptd"], RB: ["car", "ryd", "rec", "yds"], WR: ["rec", "yds", "td"], TE: ["rec", "yds", "td"] };
+const FEATURED = { QB: ["att", "cmp", "pyd", "ptd"], RB: ["car", "ryd", "rec", "yds", "rry"], WR: ["rec", "yds", "td"], TE: ["rec", "yds", "td"] };
 const POS_ORDER = ["QB", "RB", "WR", "TE"];
 
 // ---------------------------------------------------------------- probability math (mirrors scripts/model.py)
@@ -639,6 +640,11 @@ function adjustForInjuries() {
         const f = 0.5 + 0.5 * 0.86 * qb.proj[g.id].att.mean / S;
         for (const p of rec) for (const k of RIDES.tgt) ROLES.scale(p.proj[g.id][k], f);
       }
+      // rush + rec yards follow whatever happened to the two parts
+      for (const p of roster) {
+        const d = p.proj[g.id], b = p.base[g.id];
+        if (d?.rry && b?.ryd && b?.yds) ROLES.scale(d.rry, (d.ryd.mean + d.yds.mean) / Math.max(b.ryd.mean + b.yds.mean, 0.1));
+      }
       for (const p of roster) if (ROLES.outWeight(p) >= 1) ROLES.zeroOut(p, g.id);
     }
   }
@@ -745,6 +751,7 @@ const PM_STATS = {
   interceptions: "int", interceptionsthrown: "int", passinginterceptions: "int",
   rushingyards: "ryd", rushyards: "ryd", rushingattempts: "car", rushattempts: "car", carries: "car",
   receivingyards: "yds", recyards: "yds", receptions: "rec", rushingtouchdowns: "rtd", receivingtouchdowns: "td",
+  rushingreceivingyards: "rry", rushandreceivingyards: "rry", rushrecyards: "rry", rushingandreceivingyards: "rry", scrimmageyards: "rry",
   anytimetouchdown: "anytd", anytimetd: "anytd", anytimetouchdownscorer: "anytd", touchdown: "anytd", touchdowns: "anytd", scoreatouchdown: "anytd", tds: "anytd",
 };
 // how each stat moves with its team's scoring (b), with being ahead (m), and with the team's passing game (pass)
@@ -752,8 +759,9 @@ const PM_LOAD = {
   pyd: { b: 0.5, m: -0.15, pass: 0.5 }, ptd: { b: 0.55, m: 0, pass: 0.3 }, cmp: { b: 0.2, m: -0.25, pass: 0.5 }, att: { b: 0, m: -0.4, pass: 0.35 },
   int: { b: -0.2, m: -0.2, pass: 0 }, ryd: { b: 0.3, m: 0.3, pass: 0 }, car: { b: 0.15, m: 0.45, pass: 0 }, rtd: { b: 0.45, m: 0.15, pass: 0 },
   yds: { b: 0.35, m: -0.1, pass: 0.4 }, rec: { b: 0.2, m: -0.15, pass: 0.4 }, td: { b: 0.45, m: 0, pass: 0.2 }, anytd: { b: 0.5, m: 0.05, pass: 0.1 },
+  rry: { b: 0.35, m: 0.2, pass: 0.15 },
 };
-const PM_TAGS = { pyd: ["qb", "score"], ptd: ["qb", "score"], cmp: ["qb"], att: ["qb"], yds: ["rec", "skill", "score"], rec: ["rec", "skill"], ryd: ["skill", "rush"], car: ["skill", "rush"], anytd: ["skill", "score"], rtd: ["skill"], td: ["skill"] };
+const PM_TAGS = { pyd: ["qb", "score"], ptd: ["qb", "score"], cmp: ["qb"], att: ["qb"], yds: ["rec", "skill", "score"], rec: ["rec", "skill"], ryd: ["skill", "rush"], car: ["skill", "rush"], anytd: ["skill", "score"], rtd: ["skill"], td: ["skill"], rry: ["skill", "rush"] };
 function basketAdapter(g) {
   const nickOf = (tm) => (DATA.team_names[tm] || tm).split(" ").slice(-1)[0];
   const info = (pid) => {
@@ -892,7 +900,7 @@ function renderTds(g) {
 // Polymarket's yardage steps: 25 for QB passing, 10 for lead backs and good receivers, 5 for TEs and depth receivers
 function stepFor(k, p, d) {
   if (k === "pyd") return 25;
-  if (k === "ryd" || k === "yds") return (p.pos !== "TE" && d.mean >= 40) || d.mean >= 60 ? 10 : 5;
+  if (k === "ryd" || k === "yds" || k === "rry") return (p.pos !== "TE" && d.mean >= 40) || d.mean >= 60 ? 10 : 5;
   return 1;
 }
 

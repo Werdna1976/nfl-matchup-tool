@@ -19,7 +19,7 @@ LABELS = {"attempts": "QB pass attempts", "completions": "QB completions", "pass
           "passing_tds": "QB passing TDs", "passing_interceptions": "QB interceptions",
           "carries": "Rush attempts", "rushing_yards": "Rushing yards", "rushing_tds": "Rushing TDs",
           "targets": "Targets", "receptions": "Receptions", "receiving_yards": "Receiving yards",
-          "receiving_tds": "Receiving TDs"}
+          "receiving_tds": "Receiving TDs", "scrimmage_yards": "Rush + rec yards"}
 
 
 def run(season, first_week=4, data=None, prev=None):
