@@ -839,7 +839,9 @@ function basketAdapter(g) {
     storyKeys: (pl) => Object.keys(big).filter((k) => pl.d[k]?.mean >= big[k]),
     // a line on Polymarket's own ladder (5s for points and PRA, 2s for rebounds and assists) near the q-th quantile
     lineAt: (pl, k, q) => { const step = stepFor(k, pl.d[k]); return Math.max(step, Math.round(quantile(q, pl.d[k]) / step) * step) - 0.5; },
-    mainLine: (pl, k) => Math.floor(pl.d[k].mean) + 0.5,
+    // the ladder line closest to a coin flip: rebounds 4+ (3.5) or 6+ (5.5), never a 4.5 that
+    // Polymarket doesn't list, so an under reads "3 or fewer" or "5 or fewer"
+    mainLine: (pl, k) => ladderMid(pl.d[k], stepFor(k, pl.d[k])),
     prob: (pl, k, line) => (pl.d[k] ? probs(pl.d[k], line) : null),
     tags: (pl, k) => PM_TAGS[k] || [],
     load: (pl, k) => ({ b: PM_LOAD[k] ?? 0.2, m: 0, pass: 0, w: pl.d.min.mean >= 28 ? -0.25 : pl.d.min.mean < 18 ? 0.15 : 0 }),
@@ -893,7 +895,7 @@ function renderFinder(g) {
     }
   }
   items.sort((a, b) => (a.st.cv ?? 9) - (b.st.cv ?? 9));
-  const lineTxt = (it) => (state.side === "over" ? `${it.x}+` : `Under ${it.x}`);
+  const lineTxt = (it) => (state.side === "over" ? `${it.x}+` : `${it.x - 1} or fewer`);   // No on X+ = X-1 or fewer
   el.innerHTML = `
     <div class="panel-head"><h2>Alt-line finder</h2><span class="muted small">The ${state.side === "over" ? "highest" : "lowest"} Polymarket-style line each player should ${state.side === "over" ? "reach" : "stay under"} at your chosen confidence. Steadiest players first.</span></div>
     <div class="tabs">
@@ -934,6 +936,15 @@ function stepFor(k, d) {
   if (k === "pts" || k === "pra" || k === "pr" || k === "pa") return 5;
   if (k === "reb" || k === "ast" || k === "ra") return 2;
   return 1;
+}
+
+// The line on a step-sized ladder (X+ = over X - 0.5) whose over is closest to 50%.
+// Step 1 keeps the plain midpoint (floor of the mean + 0.5).
+function ladderMid(d, step) {
+  if (step <= 1) return Math.floor(d.mean) + 0.5;
+  const x0 = Math.max(step, Math.floor(quantile(0.5, d) / step) * step);
+  const off = (x) => Math.abs(probs(d, x - 0.5).over - 0.5);
+  return (off(x0 + step) < off(x0) ? x0 + step : x0) - 0.5;
 }
 
 // "X+" rows from very likely down to unlikely. p = chance of X or more.
