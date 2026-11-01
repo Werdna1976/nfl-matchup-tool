@@ -45,7 +45,7 @@ STAT_KEYS = {
     "attempts": "att", "completions": "cmp", "passing_yards": "pyd", "passing_tds": "ptd",
     "passing_interceptions": "int", "carries": "car", "rushing_yards": "ryd",
     "rushing_tds": "rtd", "targets": "tgt", "receptions": "rec",
-    "receiving_yards": "yds", "receiving_tds": "td",
+    "receiving_yards": "yds", "receiving_tds": "td", "scrimmage_yards": "rry",
 }
 
 
@@ -59,6 +59,13 @@ def read_csv(url):
     return pd.read_csv(io.BytesIO(fetch(url)), low_memory=False)
 
 
+def add_combos(stats):
+    """Combined stats books offer as one prop: rushing + receiving yards."""
+    if len(stats):
+        stats["scrimmage_yards"] = stats.rushing_yards.fillna(0) + stats.receiving_yards.fillna(0)
+    return stats
+
+
 def load(season):
     stats = read_csv(f"{NFLVERSE}/stats_player/stats_player_week_{season}.csv")
     team = read_csv(f"{NFLVERSE}/stats_team/stats_team_week_{season}.csv")
@@ -68,7 +75,7 @@ def load(season):
     except Exception as e:  # injuries file can be missing early in a season
         print("injuries unavailable:", e)
         inj = pd.DataFrame()
-    stats = stats[stats.season_type == "REG"]
+    stats = add_combos(stats[stats.season_type == "REG"].copy())
     team = team[team.season_type == "REG"]
     sched = sched[(sched.season == season) & (sched.game_type == "REG")].copy()
     return stats, team, sched, inj
@@ -78,7 +85,7 @@ def load_prev(season):
     """Last season's regular-season player stats (empty if the download fails)."""
     try:
         prev = read_csv(f"{NFLVERSE}/stats_player/stats_player_week_{season - 1}.csv")
-        return prev[prev.season_type == "REG"]
+        return add_combos(prev[prev.season_type == "REG"].copy())
     except Exception as e:
         print("last season's stats unavailable:", e)
         return pd.DataFrame()
@@ -239,7 +246,16 @@ def game_script(team, opp, teams, lg, team_margin, implied_pts):
             "pass_rate": pr_proj, "plays": plays_proj}
 
 
-def stat_factor(col, kind, pos, opp, teams, lg, gs):
+def rush_share(games):
+    """Share of a player's scrimmage yards that come on the ground (0.7 with no yards yet)."""
+    r, y = games.rushing_yards.fillna(0).clip(lower=0).sum(), games.receiving_yards.fillna(0).clip(lower=0).sum()
+    return float(r / (r + y)) if r + y > 0 else 0.7
+
+
+def stat_factor(col, kind, pos, opp, teams, lg, gs, share=0.7):
+    if kind == "yards_scrim":
+        return (share * stat_factor("rushing_yards", "yards_rush", pos, opp, teams, lg, gs)
+                + (1 - share) * stat_factor("receiving_yards", "yards_rec", pos, opp, teams, lg, gs))
     D = teams[opp]["def"]
     n = D.get("games", teams[opp]["games"])
     if kind == "volume_pass":
@@ -300,17 +316,18 @@ def project_player(games, pos, opp, teams, lg, gs, cvs, rates, calib=None, prev=
     out, raw = {}, {}
     n = len(games)
     prev = prev or {}
+    share = rush_share(games)
     for col, kind in POSITION_STATS[pos]:
         vals = [float(v) for v in games[col].fillna(0)]
         base = ewma(vals)
-        f = clip(stat_factor(col, kind, pos, opp, teams, lg, gs), 0.6, 1.5)
+        f = clip(stat_factor(col, kind, pos, opp, teams, lg, gs, share), 0.6, 1.5)
         raw[col] = max(base * f, 0.0)
         P = PARAMS.get("stats", {}).get(f"{pos}|{col}")
         if P is None:
             out[col] = _project_old(vals, col, kind, pos, f, out, cvs, rates, calib)
             continue
         if kind in COUNT_KINDS:
-            target = rates.get((pos, col), 0.0) * raw.get(TD_OPP[col], 0.0)
+            target = rates.get((pos, col), 0.0) * raw.get(TD_OPP[col], 0.0)   # 0 for WR/TE rushing TDs
             b = _blend(n, base, prev.get(col), P["k_prev"], P["k0"], target)
             mean = max(abs(P["c"]) * b * f ** P["g"], 0.005)
             out[col] = {"mean": round(mean, 3), "sd": round(math.sqrt(mean), 3), "dist": "poisson", "f": round(f, 3)}

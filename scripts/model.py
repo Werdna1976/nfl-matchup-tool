@@ -23,6 +23,9 @@ import os
 
 # Stats the site projects, by position. Each entry: (stat column, kind)
 # kind: "volume" (opportunity counts), "yards", "td", "int", "catch"
+# scrimmage_yards (rushing + receiving yards) is built in build_data.load(); its matchup factor
+# mixes the rushing and receiving factors by how the player gets his yards.
+# WR/TE rushing TDs aren't shown as a column; they feed the anytime-TD chance.
 POSITION_STATS = {
     "QB": [("attempts", "volume_pass"), ("completions", "volume_pass"),
            ("passing_yards", "yards_pass"), ("passing_tds", "td_pass"),
@@ -30,11 +33,12 @@ POSITION_STATS = {
            ("rushing_yards", "yards_rush"), ("rushing_tds", "td_rush")],
     "RB": [("carries", "volume_rush"), ("rushing_yards", "yards_rush"),
            ("rushing_tds", "td_rush"), ("targets", "volume_pass"),
-           ("receptions", "volume_pass"), ("receiving_yards", "yards_rec")],
+           ("receptions", "volume_pass"), ("receiving_yards", "yards_rec"),
+           ("receiving_tds", "td_rec"), ("scrimmage_yards", "yards_scrim")],
     "WR": [("targets", "volume_pass"), ("receptions", "volume_pass"),
-           ("receiving_yards", "yards_rec"), ("receiving_tds", "td_rec")],
+           ("receiving_yards", "yards_rec"), ("receiving_tds", "td_rec"), ("rushing_tds", "td_rush")],
     "TE": [("targets", "volume_pass"), ("receptions", "volume_pass"),
-           ("receiving_yards", "yards_rec"), ("receiving_tds", "td_rec")],
+           ("receiving_yards", "yards_rec"), ("receiving_tds", "td_rec"), ("rushing_tds", "td_rush")],
 }
 
 COUNT_KINDS = {"td_pass", "td_rush", "td_rec", "int"}

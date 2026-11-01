@@ -52,11 +52,12 @@ def season_rows(season):
                     if act.empty or hist.empty:
                         continue
                     pos = hist.position.iloc[-1]
+                    share = B.rush_share(hist)
                     raw = {}
                     for col, kind in POSITION_STATS[pos]:
                         vals = [float(v) for v in hist[col].fillna(0)]
                         n, ew = len(vals), ewma(vals)
-                        f = clip(B.stat_factor(col, kind, pos, opp, teams, lg, gs), 0.6, 1.5)
+                        f = clip(B.stat_factor(col, kind, pos, opp, teams, lg, gs, share), 0.6, 1.5)
                         raw[col] = max(ew * f, 0.0)
                         m = sum(vals) / n
                         sd = (sum((v - m) ** 2 for v in vals) / (n - 1)) ** 0.5 if n > 1 else np.nan
@@ -128,7 +129,9 @@ def above_share(F, a, qs):
 
 # ---------------------------------------------------------------- fit
 
-def fit(df, train, test):
+def fit(df, train, test, only=None):
+    if only:
+        df = df[(df.pos + "|" + df.stat).isin(only)]
     tr_all, te_all = df[df.season.isin(train)], df[df.season.isin(test)]
     stats, checks = {}, {}
     qs = (0.25, 0.5, 0.75, 0.9, 0.95, 0.98, 0.99)
@@ -171,14 +174,21 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--train", type=int, nargs="+", default=[2022, 2023, 2024])
     ap.add_argument("--test", type=int, nargs="+", default=[2025, this])
+    ap.add_argument("--only", nargs="+", help='refit just these, e.g. RB|receiving_tds; keep the rest of model_params.json')
     args = ap.parse_args()
     seasons = sorted(set(args.train) | set(args.test))
     with ProcessPoolExecutor() as ex:
         df = pd.concat(list(ex.map(season_rows, seasons)))
-    stats, checks = fit(df, args.train, args.test)
+    stats, checks = fit(df, args.train, args.test, args.only)
+    out = {"fitted_on": args.train, "tested_on": args.test, "fitted": dt.date.today().isoformat(), "stats": {}, "test": {}}
+    if args.only:
+        with open(OUT) as f:
+            out = json.load(f)
+        out.setdefault("refit", {}).update({k: dt.date.today().isoformat() for k in args.only})
+    out["stats"].update(stats)
+    out["test"].update(checks)
     with open(OUT, "w") as f:
-        json.dump({"fitted_on": args.train, "tested_on": args.test,
-                   "fitted": dt.date.today().isoformat(), "stats": stats, "test": checks}, f, indent=1)
+        json.dump(out, f, indent=1)
     print("wrote", OUT)
     print("\nHeld-out share of results above the model's percentile (ideal: .75 .5 .25 .1 .05 .02 .01)")
     for k, c in checks.items():
