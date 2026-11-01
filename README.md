@@ -9,14 +9,14 @@ starts out matching your computer's setting and remembers your choice).
 **Live site:** https://werdna1976.github.io/nfl-matchup-tool/ (NBA: [nba.html](https://werdna1976.github.io/nfl-matchup-tool/nba.html))
 
 - **🔒 Best bets** (header button, or the first card in the game list): the place to start on game day.
-  - **Lock of the week** (NFL) / **Lock of the day** (NBA): up to three short parlays across one day's games
+  - **Lock of the week** (NFL) / **Lock of the day** (NBA): up to five short parlays across one day's games
     (for example all of Sunday's NFL games, never two days at once), each paying 2.5x to 5x. Every leg is a
-    real Polymarket line priced 35–92¢ with $20 of depth, passes the pressure test below, and has an adjusted
-    chance at or above its price; at least two legs per lock are Verified. Legs from the same game must fit
+    real Polymarket line priced 35–92¢ with $20 of depth that the pressure test grades Verified or Caution
+    (never Skip); Verified legs aren't required, since real Verified misprices are rare. Legs from the same game must fit
     one storyline that happens in at least 1 game in 5 and never pull against each other. Each lock needs
-    +5% expected return on cautious chances (half of the simulated "legs move together" boost counted), and
+    +2% expected return on cautious chances (half of the simulated "legs move together" boost counted), and
     the ones shown give the most return for the risk, share no player or game result, and use a game in at
-    most two locks. Each card shows its "still worth it" payout, for when Polymarket's parlay builder quotes less.
+    most three locks. Each card shows its "still worth it" payout, for when Polymarket's parlay builder quotes less.
   - **Best underpriced props**: single bets across every game today and tomorrow, pressure-tested.
 - **Each game** has four tabs:
   - **Bets** (Polymarket, opens on its own): **Underpriced props** (single bets at least 3¢ under the model,
