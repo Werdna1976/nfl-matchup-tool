@@ -255,8 +255,11 @@ async function reloadAll() {
   await refreshLines(true);
 }
 
+// short in the header, the whole story on hover
+const lineShort = () => (/^Lines live/.test(LINE_STATUS) ? "live lines" : /blocked/.test(LINE_STATUS) ? "saved lines (ESPN blocked here)" : "checking lines…");
 function renderMeta() {
-  $("#meta").textContent = `${DATA.season} season · stats through week ${DATA.stats_through} · data file ${new Date(DATA.updated).toLocaleString()} · ${LINE_STATUS}${NEWS_STATUS}`;
+  $("#meta").textContent = `${DATA.season} · stats through week ${DATA.stats_through} · ${lineShort()}`;
+  $("#meta").title = `Data file ${new Date(DATA.updated).toLocaleString()} · ${LINE_STATUS}${NEWS_STATUS}`;
 }
 
 async function loadData() {
@@ -342,12 +345,12 @@ function renderGames() {
 
 function curGame() { return DATA.games.find((g) => g.id === state.gameId); }
 
-// ---------------------------------------------------------------- best props, all games today and tomorrow
+// ---------------------------------------------------------------- best bets: the lock plus best props, all games today and tomorrow
 
 const PROPS_CARD = () => `
     <button type="button" class="gcard props-card" data-props aria-current="${state.view === "props"}">
-      <div class="row"><span class="teams">★ Best props today</span></div>
-      <div class="lines">Underpriced, every game today and tomorrow</div>
+      <div class="row"><span class="teams">🔒 Best bets</span></div>
+      <div class="lines">Lock of the week + best underpriced props</div>
     </button>`;
 function openProps() { state.view = "props"; renderGames(); window.scrollTo({ top: 0 }); }
 function openFromProps(id) {
@@ -384,23 +387,31 @@ function renderGame() {
       </div>
     </div>
 
-    <div class="grid2">
-      <div class="panel" id="totalTool"></div>
-      <div class="panel" id="spreadTool"></div>
+    ${GAME_TABS.bar()}
+    <div data-tab="bets">
+      <div class="panel" id="baskets"></div>
     </div>
-
-    <div class="panel">
-      <div class="panel-head"><h2>Matchup strength</h2><span class="muted small">Ratings use EPA per play (points added per play) vs. the league. 0 = average.</span></div>
-      <div class="grid2">${matchupSide(g, g.away, g.home)}${matchupSide(g, g.home, g.away)}</div>
+    <div data-tab="players">
+      <div class="panel" id="players"></div>
+      <div class="panel" id="tds"></div>
+      <div class="panel" id="finder"></div>
+      <div class="panel" id="spots"></div>
     </div>
-
-    <div class="panel" id="players"></div>
-    <div class="panel" id="spots"></div>
-    <div class="panel" id="baskets"></div>
-    <div class="panel" id="notes"></div>
-    <div class="panel" id="tds"></div>
-    <div class="panel" id="finder"></div>
+    <div data-tab="game">
+      <div class="grid2">
+        <div class="panel" id="totalTool"></div>
+        <div class="panel" id="spreadTool"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h2>Matchup strength</h2><span class="muted small">Ratings use EPA per play (points added per play) vs. the league. 0 = average.</span></div>
+        <div class="grid2">${matchupSide(g, g.away, g.home)}${matchupSide(g, g.home, g.away)}</div>
+      </div>
+    </div>
+    <div data-tab="notes">
+      <div class="panel" id="notes"></div>
+    </div>
   `;
+  GAME_TABS.wire($("#game"));
   renderTotalTool(g); renderSpreadTool(g); renderPlayers(g); renderSpots(g); renderNotes(g); renderTds(g); renderFinder(g);
   BASKETS.render($("#baskets"), g, basketAdapter(g));
 }
@@ -1063,7 +1074,7 @@ function renderStatDetail(p, k, d, g) {
     </div>`;
   el.querySelectorAll("[data-i]").forEach((b) => b.onclick = () => {
     const r = rows[Number(b.dataset.i)], yes = b.dataset.s === "yes";
-    addLeg({ label: `${p.name} ${yes ? `${r.x}+` : `under ${r.x}`} ${name}`, p: yes ? r.p : 1 - r.p, game: g.id });
+    addLeg({ label: `${p.name} ${yes ? `${r.x}+` : `${r.x - 1} or fewer`} ${name}`, p: yes ? r.p : 1 - r.p, game: g.id });
   });
   const input = el.querySelector("input"), out = el.querySelector(".out");
   const update = () => {
@@ -1139,7 +1150,8 @@ function openHow() {
       <p><b>Teammates who are out.</b> When a player is listed Out (or Doubtful, counted at 75%), his carries go to the other backs and most of his targets to the other receivers, weighted toward his position. A starting QB out hands his volume to the backup at lower efficiency. Where a teammate has played games without him, those real numbers are blended in. Changed numbers carry a ▲ or ▼.</p>
       <p><b>What it doesn't know.</b> Injuries during the week until the page refreshes, weather beyond what's listed, coaching changes, and snap-count news. A player listed Questionable could be on a snap limit.</p>
       <p><b>Using it for alt lines.</b> If the model says 80% and Polymarket charges 70¢, that's a possible edge. If it charges 85¢, it isn't. Multiplying many 80% legs drops fast: five of them is about 33%.</p>
-      <p><b>Storyline baskets.</b> From the day before kickoff (or within 24 hours of the start) the page reads Polymarket's player and game markets for the game you're viewing, priced at the ask (what you'd pay right now), with thin or wide markets flagged. It simulates the game 6,000 times so legs move together the way they do in real games: a QB's yards and his top receiver's rise together, a team that's ahead runs more. For each story it picks 2–4 legs with the best expected return that together pay more than 4x net. How strongly legs move together is a reasoned estimate, not yet checked against past games. Below the baskets, <b>Underpriced props</b> lists single bets whose Polymarket price is at least 3¢ under the model's chance, biggest gap first.</p>
+      <p><b>Polymarket bets.</b> From the day before kickoff (or within 24 hours of the start) each game's <b>Bets</b> tab reads Polymarket's player and game markets, priced at what a $20 bet would really cost. <b>Underpriced props</b> are single bets at least 3¢ below the model's chance, each pressure-tested (the model's track record, Polymarket's whole line ladder, the sportsbook line, injuries, news, and price moves) and graded Verified, Caution, or Skip. <b>Storyline baskets</b> are longer parlays built around one story; the game is simulated 6,000 times so legs move together the way they do in real games (a QB's yards and his top receiver's rise together, a team that's ahead runs more). <b>Lottery tickets</b> are long shots priced at or below their chance.</p>
+      <p><b>Lock of the week.</b> On the Best bets page: two to five legs across at least two games on the same day, paying 2.5x to 5x, built only from legs that pass the pressure test, with same-game legs that fit one storyline. It counts only half of the simulated boost from legs moving together and needs at least +5% expected return on those cautious chances. How strongly legs move together is a reasoned estimate, not yet checked against past games.</p>
     </div>
     ${bt.length ? `<div class="panel"><h3>Track record this season</h3>
       <div class="small muted" style="margin-bottom:6px">${esc(BACKTEST.note)} A well-tuned model lands about 80% inside its 80% range and 50% inside its 50% range. "Avg miss" is the average gap between projection and result.</div>

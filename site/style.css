@@ -48,7 +48,7 @@ button { font: inherit; color: inherit; }
 .muted { color: var(--muted); }
 .small { font-size: 12.5px; }
 h1 { font-size: 19px; margin: 0; }
-h2 { font-size: 17px; margin: 0 0 8px; }
+h2 { font-size: 17px; margin: 0 0 8px; letter-spacing: -.01em; }
 h3 { font-size: 15px; margin: 0 0 6px; }
 
 .top {
@@ -140,7 +140,6 @@ tbody tr.click:hover { background: var(--panel-2); }
 td .rng { display: block; font-size: 11.5px; color: var(--muted); }
 .pname { font-weight: 600; }
 .pos-tag { font-size: 11px; color: var(--muted); margin-left: 4px; }
-.badge { font-size: 11px; padding: 1px 6px; border-radius: 6px; margin-left: 6px; font-weight: 600; }
 .badge.out { background: var(--bad); color: #fff; }
 .badge.q { background: var(--warn); color: #fff; }
 .stab { font-size: 11.5px; display: inline-block; white-space: normal; line-height: 1.15; max-width: 4.6em; }
@@ -199,7 +198,7 @@ table.ladder td, table.ladder th { padding: 5px 8px; }
 @media (max-width: 600px) { .note-row { grid-template-columns: minmax(0, 1fr); } }
 
 /* finished and in-progress games */
-.badge { font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; padding: 1px 7px; border-radius: 999px; white-space: nowrap; align-self: center; }
+.badge { font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; padding: 1px 7px; border-radius: 999px; white-space: nowrap; align-self: center; margin-left: 6px; }
 .badge.final { background: var(--text); color: var(--panel); }
 .badge.live { background: var(--bad); color: #fff; }
 .gcard.post { background: var(--panel-2); }
@@ -241,7 +240,7 @@ td.out-row { text-align: left; white-space: normal; color: var(--muted); font-si
 .basket .theme { margin: 4px 0 2px; }
 .lotto td:nth-child(2), .lotto th:nth-child(2) { text-align: left; }
 .lotto-t { width: auto; }
-.lotto-t .lt-leg { text-align: left; max-width: 260px; }
+.lotto-t .lt-leg { text-align: left; max-width: 280px; white-space: normal; }
 .lotto-t .lg-gap { width: 10px; padding: 0; border: none; }
 .lotto-t .lg { text-align: center; min-width: 44px; padding-left: 4px; padding-right: 4px; white-space: nowrap; }
 .lotto-t .lg-btn { font: inherit; font-weight: 700; padding: 1px 8px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: inherit; cursor: pointer; }
@@ -283,3 +282,46 @@ td.out-row { text-align: left; white-space: normal; color: var(--muted); font-si
 .vet-skipped { margin-top: 8px; }
 .vet-skipped summary { cursor: pointer; color: var(--muted); font-size: 13px; }
 tr.vet-row-skip td { opacity: .75; }
+
+/* ------------------------------------------------------------ 2026-11 tidy-up */
+
+/* header: the Best bets button stands out from the plain ones */
+.props-btn { background: color-mix(in srgb, var(--accent) 12%, var(--panel-2)); border-color: color-mix(in srgb, var(--accent) 45%, transparent); color: var(--accent); font-weight: 600; }
+.props-btn:hover { background: var(--accent); color: #fff; }
+.brand .muted { cursor: help; }
+
+/* game page tabs */
+.gtabs { display: flex; gap: 4px; margin: 0 0 14px; border-bottom: 1px solid var(--line); overflow-x: auto; }
+.gtabs button { background: none; border: 0; border-bottom: 3px solid transparent; padding: 8px 14px; cursor: pointer; color: var(--muted); font-weight: 600; white-space: nowrap; }
+.gtabs button:hover { color: var(--text); }
+.gtabs button[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); }
+[data-tab][hidden] { display: none; }
+
+/* status line under a panel title, and fold-away explanations */
+.status { margin: -2px 0 6px; }
+details.how { margin: 6px 0 8px; font-size: 12.5px; color: var(--muted); }
+details.how summary { cursor: pointer; width: fit-content; color: var(--accent); }
+details.how > div { margin-top: 6px; padding: 8px 10px; background: var(--panel-2); border-radius: 8px; line-height: 1.5; }
+.lotto.first { margin-top: 4px; border-top: 0; padding-top: 0; }
+.lotto h3 { font-size: 16px; }
+
+/* Best bets: the lock section on top */
+.lock-sec { margin: 6px 0 18px; }
+.lock-sec h2, .ap-h { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.lk-day { font-size: 14px; font-weight: 500; }
+.lk-days { margin: 2px 0 6px; }
+.locks { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(380px, 100%), 1fr)); gap: 12px; margin-top: 10px; }
+.lock { border: 1px solid color-mix(in srgb, var(--good) 40%, var(--line)); border-top: 4px solid var(--good); border-radius: 10px; padding: 10px 12px; background: var(--panel-2); min-width: 0; }
+.lock-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.lock-n { font-weight: 700; font-size: 15px; }
+.lock-pay { font-size: 15px; }
+.lock-pay b { font-size: 22px; color: var(--good); }
+.lock-stats { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; margin: 2px 0 4px; }
+.lock-t td, .lock-t th { padding: 4px 6px; vertical-align: top; }
+.lock-t .lk-leg { white-space: normal; text-align: left; }
+.lock-t .lk-leg a { color: inherit; }
+.lock-t tr.lk-game td { background: var(--panel); white-space: normal; text-align: left; padding-top: 6px; }
+.ap-sec { border-top: 1px solid var(--line); padding-top: 12px; }
+.ap-h { font-size: 17px; }
+details.ap-games > div { background: none; padding: 0; }
+.ap-games .ap-chips { margin: 4px 0 0; }

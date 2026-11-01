@@ -1,6 +1,7 @@
 "use strict";
 
-// Best underpriced props across every game today and tomorrow, shared by the NFL and NBA pages.
+// The Best bets view, shared by the NFL and NBA pages: the Lock of the week / day (locks.js) on
+// top, then the best underpriced props across every game today and tomorrow.
 //
 // Each game is pulled from Polymarket the same way its own "Underpriced props" section is
 // (BASKETS.pull + legsFromMarkets + underpriced): real listed lines, $20 of depth near the ask,
@@ -23,7 +24,7 @@ const ALLPROPS = (() => {
   const addDays = (day, n) => { const d = new Date(`${day}T12:00:00Z`); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
   const clock = (ms) => new Date(ms).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 
-  let sortMode = "best";
+  let sortMode = "best", lockDay = null;
   try { sortMode = localStorage.getItem("allPropsSort") || "best"; } catch (e) { /* private mode */ }
 
   // run fn over items, a few at a time
@@ -47,6 +48,7 @@ const ALLPROPS = (() => {
     if (rec.src === "blocked") { info.status = "Polymarket unreachable"; return info; }
     if (!priced) { info.status = "no player props posted yet"; return info; }
     const legs = BASKETS.legsFromMarkets(A, g, rec.markets);
+    info.legs = legs;
     // each row pressure-tested (vet.js) against its own game's markets
     info.rows = BASKETS.underpriced(legs, (l) => VET.grade(l, { A, g, legs })).map((l) => ({ ...l, gi: info }));
     info.status = `${info.rows.filter((l) => l.vet.level !== "skip").length} passed checks${rec.src === "saved" ? " (saved prices)" : ""}`;
@@ -76,8 +78,8 @@ const ALLPROPS = (() => {
     const list = games.map((g) => ({ g, A: adapter(g) }))
       .filter(({ g, A }) => [today, tomorrow].includes(A.gameDay(g)) && !A.isPost(g))
       .sort((x, y) => x.A.kickoff(x.g) - y.A.kickoff(y.g));
-    const head = (status, canRefresh) => `<div class="panel-head"><h2>Best underpriced props · ${esc(sport)} today and tomorrow</h2><span class="muted small">${status}</span>${canRefresh ? `<button type="button" class="btn" data-ap-refresh>Refresh prices</button>` : ""}</div>`;
-    if (!list.length) { el.innerHTML = head("") + `<div class="empty">No ${esc(sport)} games left today or tomorrow.</div>`; return; }
+    const head = (status, canRefresh) => `<div class="panel-head"><h2>Best bets · ${esc(sport)}</h2>${canRefresh ? `<button type="button" class="btn" data-ap-refresh>Refresh prices</button>` : ""}</div><div class="muted small status">${status}</div>`;
+    if (!list.length) { el.innerHTML = head("") + `<div class="empty">No ${esc(sport)} games left today or tomorrow. The lock and the best props show up once a game day is within reach (the day before for the NFL, game day for the NBA).</div>`; return; }
     if (!el.dataset.apShown) el.innerHTML = head(`Pulling Polymarket prices for ${list.length} game${list.length > 1 ? "s" : ""}…`) + `<div class="empty">Checking each game's markets. This takes a few seconds.</div>`;
 
     const infos = await pool(list, POOL, ({ g, A }) => scan(g, A, today).catch(() => ({ g, A, day: A.gameDay(g), when: A.kickoff(g), dayTxt: A.gameDay(g) === today ? "Today" : "Tomorrow", match: `${g.away} @ ${g.home}`, rows: [], status: "couldn't check" })));
@@ -89,14 +91,38 @@ const ALLPROPS = (() => {
     const blocked = checked.length && checked.every((i) => i.rec.src === "blocked");
     const newest = Math.max(0, ...checked.map((i) => i.rec.t || 0));
     const status = blocked ? "Couldn't reach Polymarket from this computer (it may be blocked on this network)."
-      : checked.length ? `Polymarket prices as of <b>${clock(newest)}</b> (updates every 2 minutes) · ${infos.filter((i) => i.ok).length} of ${infos.length} games have props posted`
+      : checked.length ? `Polymarket prices as of <b>${clock(newest)}</b> (updates every 2 minutes)`
       : "No game's prices are open yet.";
 
     const chips = infos.map((i) => `<button type="button" class="note-chip ap-chip ${i.rows.length ? "good" : ""}" data-open="${esc(i.g.id)}" title="${esc(i.why || "Open this game")}"><b>${esc(i.match)}</b> ${i.dayTxt} ${esc(clock(i.when))} · ${esc(i.status)}</button>`).join("");
-    const intro = `<div class="muted small vet-rules">${VET.RULES}</div><div class="muted small">Single bets where Polymarket's ask is below the model's chance by at least ${Math.round(BASKETS.UNDER_MIN_EDGE * 100)}¢, pulled from every ${esc(sport)} game today and tomorrow. Same rules as each game's Underpriced props section: real listed lines only, each takes a $${BASKETS.STAKE} bet near the price shown, one row per line ladder, long shots under ${Math.round(BASKETS.LOTTO_MAX * 100)}¢ left out. Player props show the player's team in brackets. Click a game to open it.</div>`;
+    const intro = `<h2 class="ap-h">Best underpriced props <span class="muted lk-day">today and tomorrow</span></h2><div class="muted small">Single bets where Polymarket's price is at least ${Math.round(BASKETS.UNDER_MIN_EDGE * 100)}¢ below the model's chance, from every ${esc(sport)} game today and tomorrow. Trust the <b>Check</b> column over the raw edge. Click a game to open it.</div>
+      ${BASKETS.how(`Same rules as each game's Underpriced props: real listed lines only, each takes a $${BASKETS.STAKE} bet near the price shown, one row per line ladder, long shots under ${Math.round(BASKETS.LOTTO_MAX * 100)}¢ left out.<br><br>${VET.RULES}`)}`;
     const sorter = `<div class="ap-sort"><span class="muted small">Order:</span>
       <button type="button" class="chip" data-ap-sort="best" aria-pressed="${sortMode === "best"}">Best first</button>
       <button type="button" class="chip" data-ap-sort="game" aria-pressed="${sortMode === "game"}">By game</button></div>`;
+
+    // the lock: one day's games (today or tomorrow), default the day with the most open games
+    const dayList = [...new Set(infos.map((i) => i.day))].map((day) => {
+      const gs = infos.filter((i) => i.day === day);
+      return { day, n: gs.length, open: gs.filter((i) => i.ok).length };
+    });
+    const pickDay = () => {
+      const open = dayList.filter((d) => d.open);
+      if (!open.length) return dayList[0].day;
+      return sport === "NFL" ? open.reduce((a, b) => (b.open > a.open ? b : a)).day : open[0].day;
+    };
+    if (!dayList.some((d) => d.day === lockDay)) lockDay = pickDay();
+    const dayInfos = infos.filter((i) => i.day === lockDay);
+    let lockRes = null, waiting = null;
+    if (blocked) waiting = "Polymarket is blocked on this network, so there are no prices to build a lock from.";
+    else if (!dayInfos.some((i) => i.ok)) {
+      const shut = dayInfos.find((i) => i.why && !i.rec);
+      waiting = shut ? shut.why : `Polymarket hasn't posted player props for these games yet. ${sport === "NBA" ? "NBA props often go up only on game day." : "NFL props usually go up the day before."}`;
+    } else {
+      lockRes = await LOCKS.build(dayInfos);
+      if (el._apToken !== token) return;
+    }
+    const lockHtml = LOCKS.html({ sport, day: lockDay, days: dayList, res: lockRes, waiting });
 
     // the price-history check needs the network, so run it only on rows that could be shown
     let body;
@@ -116,8 +142,12 @@ const ALLPROPS = (() => {
         + (all.length - skip.length > top.length ? `<div class="note">Showing the best ${top.length} that passed, with at most ${PER_GAME} per game and ${PER_KIND} of any one kind of bet so the list stays spread out. "By game" shows them all.</div>` : "");
     }
 
-    el.innerHTML = head(status, true) + `<div class="ap-chips note-chips">${chips}</div>` + intro + sorter + body;
+    // the per-game status chips fold away once every game has its props
+    const missing = infos.filter((i) => !i.ok).length;
+    const chipBox = `<details class="how ap-games"${missing && !blocked ? " open" : ""}><summary>${infos.length - missing} of ${infos.length} games checked have props · show games</summary><div class="ap-chips note-chips">${chips}</div></details>`;
+    el.innerHTML = head(status, true) + chipBox + lockHtml + `<section class="ap-sec">` + intro + sorter + body + `</section>`;
     el.querySelectorAll("[data-open]").forEach((b) => (b.onclick = () => onOpen(b.dataset.open)));
+    el.querySelectorAll("[data-lock-day]").forEach((b) => (b.onclick = () => { lockDay = b.dataset.lockDay; render(el, { games, adapter, onOpen, sport }); }));
     el.querySelectorAll("[data-ap-sort]").forEach((b) => (b.onclick = () => {
       sortMode = b.dataset.apSort;
       try { localStorage.setItem("allPropsSort", sortMode); } catch (e) { /* private mode */ }
