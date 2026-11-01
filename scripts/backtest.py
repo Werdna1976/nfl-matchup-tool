@@ -2,7 +2,8 @@
 
 For each past week W, rebuild every projection using only games before W, then
 compare with what happened. A well-calibrated model has ~80% of results inside
-its 80% range and ~50% inside its 50% range.
+its 80% range, ~50% inside its 50% range, and ~10% / ~5% above its 90th / 95th percentile
+(the long-shot overs).
 
 Writes site/data/backtest.json, which the site shows on its "How good is the model?" panel.
 """
@@ -21,14 +22,15 @@ LABELS = {"attempts": "QB pass attempts", "completions": "QB completions", "pass
           "receiving_tds": "Receiving TDs"}
 
 
-def run(season, first_week=4, data=None):
+def run(season, first_week=4, data=None, prev=None):
     stats, team_stats, sched = data or B.load(season)[:3]
+    prev = B.prev_summary(B.load_prev(season)) if prev is None else prev
     last = int(stats.week.max())
     rows = []
     for W in range(first_week, last + 1):
         teams, lg = B.team_context(stats, team_stats, sched, W)
         cvs, rates = B.prior_cvs(stats, W), B.prior_rates(stats, W)
-        for g in sched[sched.week == W].itertuples():
+        for g in sched[(sched.week == W) & sched.home_score.notna()].itertuples():
             gm = B.game_model(g.home_team, g.away_team, teams, lg, g.spread_line, g.total_line)
             rows.append({"stat": "game_total", "pos": "GAME", "week": W, "actual": g.home_score + g.away_score,
                          "cdf": cdf(g.home_score + g.away_score, gm["total"]),
@@ -45,7 +47,7 @@ def run(season, first_week=4, data=None):
                     if actual.empty or hist.empty:
                         continue
                     pos = hist.position.iloc[-1]
-                    proj = B.project_player(hist, pos, opp, teams, lg, gs, cvs, rates)
+                    proj = B.project_player(hist, pos, opp, teams, lg, gs, cvs, rates, prev=prev.get(pid))
                     for col, kind in POSITION_STATS[pos]:
                         a = float(actual[col].fillna(0).iloc[0])
                         p = proj[col]
@@ -62,45 +64,6 @@ def _overlap(a, b, lo, hi):
     return max(0.0, min(b, hi) - max(a, lo)) / (b - a)
 
 
-def calibrate(rows):
-    """Widen each stat's range until 80% of past results land inside its 80% range.
-
-    Returns {stat: multiplier for sd}. Touchdown counts use Poisson odds and are left as is.
-    """
-    out = {}
-    by = {}
-    for r in rows:
-        if "proj" in r and r["proj"]["dist"] == "gamma":
-            by.setdefault(r["stat"], []).append(r)
-    for stat, rs in by.items():
-        if len(rs) < 40:
-            continue
-        best, err = 1.0, 1.0
-        for i in range(0, 31):
-            m = 1 + i * 0.04
-            inside = 0.0
-            for r in rs:
-                p = dict(r["proj"], sd=r["proj"]["sd"] * m)
-                inside += _overlap(cdf(r["actual"] - 0.5, p), cdf(r["actual"] + 0.5, p), 0.1, 0.9)
-            e = abs(inside / len(rs) - 0.8)
-            if e < err:
-                best, err = m, e
-        out[stat] = round(best, 2)
-    return out
-
-
-def apply_calibration(rows):
-    """Out of sample: week W's ranges use a multiplier fitted only on weeks before W."""
-    weeks = sorted({r["week"] for r in rows})
-    for W in weeks:
-        mult = calibrate([r for r in rows if r["week"] < W])
-        for r in rows:
-            if r["week"] == W and "proj" in r and r["stat"] in mult:
-                p = dict(r["proj"], sd=r["proj"]["sd"] * mult[r["stat"]])
-                r["cdf"], r["cdf_lo"] = cdf(r["actual"] + 0.5, p), cdf(r["actual"] - 0.5, p)
-    return rows
-
-
 def summarize(rows):
     by = {}
     for r in rows:
@@ -115,6 +78,7 @@ def summarize(rows):
         mae = sum(abs(r["actual"] - r["pred"]) for r in rs) / n
         mae_base = sum(abs(r["actual"] - r["base"]) for r in rs) / n
         out.append({"stat": key, "n": n, "in80": round(inside(0.1, 0.9), 3), "in50": round(inside(0.25, 0.75), 3),
+                    "above90": round(inside(0.9, 1.0), 3), "above95": round(inside(0.95, 1.0), 3),
                     "mae": round(mae, 2), "mae_season_avg": round(mae_base, 2)})
     order = list(LABELS.values()) + ["Game total points"]
     return sorted(out, key=lambda o: order.index(o["stat"]))
@@ -124,12 +88,10 @@ if __name__ == "__main__":
     import datetime as dt
     season = int(sys.argv[1]) if len(sys.argv) > 1 else dt.date.today().year
     rows = run(season)
-    print("raw:")
-    for s in summarize(rows):
-        print(f"  {s['stat']:20s} in80={s['in80']:.2f}")
-    summary = summarize(apply_calibration([r for r in rows]))
+    summary = summarize(rows)
     for s in summary:
         print(f"{s['stat']:20s} n={s['n']:4d}  in80={s['in80']:.2f}  in50={s['in50']:.2f}  "
+              f"above90={s['above90']:.3f}  above95={s['above95']:.3f}  "
               f"MAE={s['mae']:7.2f}  (season-avg MAE {s['mae_season_avg']:7.2f})")
     out = os.path.join(os.path.dirname(__file__), "..", "site", "data", "backtest.json")
     os.makedirs(os.path.dirname(out), exist_ok=True)

@@ -34,7 +34,7 @@ const ROLES = (() => {
   function scale(d, r) {
     if (!d || !(r > 0) || Math.abs(r - 1) < 1e-9) return;
     d.mean *= r;
-    if (d.dist === "gamma" || d.dist === "normal") d.sd *= r;
+    if (d.dist === "gamma" || d.dist === "gmix" || d.dist === "normal") d.sd *= r;
     else if (d.dist === "negbin") d.sd *= Math.sqrt(r);
   }
 

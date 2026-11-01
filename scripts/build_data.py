@@ -19,7 +19,7 @@ import urllib.request
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(__file__))
-from model import (POSITION_STATS, COUNT_KINDS, TOTAL_SD, MARGIN_SD,  # noqa: E402
+from model import (POSITION_STATS, COUNT_KINDS, TOTAL_SD, MARGIN_SD, PARAMS,  # noqa: E402
                    ewma, shrink, clip)
 
 NFLVERSE = "https://github.com/nflverse/nflverse-data/releases/download"
@@ -72,6 +72,16 @@ def load(season):
     team = team[team.season_type == "REG"]
     sched = sched[(sched.season == season) & (sched.game_type == "REG")].copy()
     return stats, team, sched, inj
+
+
+def load_prev(season):
+    """Last season's regular-season player stats (empty if the download fails)."""
+    try:
+        prev = read_csv(f"{NFLVERSE}/stats_player/stats_player_week_{season - 1}.csv")
+        return prev[prev.season_type == "REG"]
+    except Exception as e:
+        print("last season's stats unavailable:", e)
+        return pd.DataFrame()
 
 
 # ---------------------------------------------------------------- context
@@ -258,31 +268,83 @@ def stat_factor(col, kind, pos, opp, teams, lg, gs):
     return 1.0
 
 
-def project_player(games, pos, opp, teams, lg, gs, cvs, rates, calib=None):
-    """games: the player's per-game rows (oldest first). Returns {stat: projection}."""
+def prev_summary(prev_stats):
+    """Last season per player: {player_id: {stat: (games, per-game average)}}."""
     out = {}
+    if prev_stats is None or not len(prev_stats):
+        return out
+    cols = [c for items in POSITION_STATS.values() for c, _ in items]
+    cols = list(dict.fromkeys(cols))
+    g = prev_stats.groupby("player_id")
+    n, m = g.size(), g[cols].apply(lambda d: d.fillna(0).mean())
+    for pid in n.index:
+        out[pid] = {c: (int(n[pid]), float(m.loc[pid, c])) for c in cols}
+    return out
+
+
+def _blend(n, ew, prev, k_prev, k0, target):
+    """Recent form, pulled toward last season (if he played 4+ games) and a baseline."""
+    pn, pm = prev if prev else (0, 0.0)
+    kp = abs(k_prev) * min(pn, 17) / 17 if pn >= 4 else 0.0
+    return (n * ew + kp * pm + abs(k0) * target) / (n + kp + abs(k0))
+
+
+def project_player(games, pos, opp, teams, lg, gs, cvs, rates, calib=None, prev=None):
+    """games: the player's per-game rows (oldest first). prev: his line from prev_summary().
+
+    Returns {stat: projection}. The average blends recent form, last season, and a baseline,
+    then applies the matchup; the spread depends on how big the average is (bigger roles are
+    steadier) and the shape mixes normal games with occasional dud games. All of these weights
+    come from model_params.json (fitted on past seasons by fit_model.py).
+    """
+    out, raw = {}, {}
     n = len(games)
+    prev = prev or {}
     for col, kind in POSITION_STATS[pos]:
         vals = [float(v) for v in games[col].fillna(0)]
         base = ewma(vals)
         f = clip(stat_factor(col, kind, pos, opp, teams, lg, gs), 0.6, 1.5)
-        mean = max(base * f, 0.0)
+        raw[col] = max(base * f, 0.0)
+        P = PARAMS.get("stats", {}).get(f"{pos}|{col}")
+        if P is None:
+            out[col] = _project_old(vals, col, kind, pos, f, out, cvs, rates, calib)
+            continue
         if kind in COUNT_KINDS:
-            # few games of TDs is mostly luck: blend with the league rate for this much volume
-            vol = out.get(TD_OPP[col], {}).get("mean", 0.0)
-            prior = rates.get((pos, col), 0.0) * vol * f
-            mean = (n * mean + 4 * prior) / (n + 4)
+            target = rates.get((pos, col), 0.0) * raw.get(TD_OPP[col], 0.0)
+            b = _blend(n, base, prev.get(col), P["k_prev"], P["k0"], target)
+            mean = max(abs(P["c"]) * b * f ** P["g"], 0.005)
             out[col] = {"mean": round(mean, 3), "sd": round(math.sqrt(mean), 3), "dist": "poisson", "f": round(f, 3)}
             continue
-        prior = cvs.get((pos, col), 0.5)
-        m = sum(vals) / n if n else 0
-        cv_s = (sum((v - m) ** 2 for v in vals) / (n - 1)) ** 0.5 / m if n > 1 and m > 0 else prior
-        k = 4
-        cv = math.sqrt(((n - 1) * cv_s ** 2 + k * prior ** 2) / (n - 1 + k)) if n > 1 else prior
-        cv *= math.sqrt(1 + 1 / max(n, 1))   # we are also unsure of the true average
+        b = _blend(n, base, prev.get(col), P["k_prev"], P["k0"], abs(P["mu"]))
+        mean = max(P["c"] * b * f ** P["g"], 0.05)
+        curve = abs(P["a"]) * mean ** (-P["p"])
+        m = sum(vals) / n if n else 0.0
+        own = ((sum((v - m) ** 2 for v in vals) / (n - 1)) ** 0.5 / m) if n > 1 and m > 0 else curve
+        w = max(n - 1, 0)
+        cv = math.sqrt((w * own ** 2 + abs(P["k_own"]) * curve ** 2) / (w + abs(P["k_own"])))
         cv = clip(cv * (calib or {}).get(col, 1.0), 0.12, 2.0)
-        out[col] = {"mean": round(mean, 2), "sd": round(max(cv * mean, 0.5), 2), "dist": "gamma", "f": round(f, 3)}
+        out[col] = {"mean": round(mean, 2), "sd": round(max(cv * mean, 0.5), 2), "dist": "gmix",
+                    "w": round(P["w"], 3), "r": round(P["r"], 3), "k": round(P["k"], 3), "f": round(f, 3)}
     return out
+
+
+def _project_old(vals, col, kind, pos, f, out, cvs, rates, calib):
+    """The original hand-set model, used only if model_params.json has no entry for a stat."""
+    n = len(vals)
+    mean = max(ewma(vals) * f, 0.0)
+    if kind in COUNT_KINDS:
+        vol = out.get(TD_OPP[col], {}).get("mean", 0.0)
+        prior = rates.get((pos, col), 0.0) * vol * f
+        mean = (n * mean + 4 * prior) / (n + 4)
+        return {"mean": round(mean, 3), "sd": round(math.sqrt(mean), 3), "dist": "poisson", "f": round(f, 3)}
+    prior = cvs.get((pos, col), 0.5)
+    m = sum(vals) / n if n else 0
+    cv_s = (sum((v - m) ** 2 for v in vals) / (n - 1)) ** 0.5 / m if n > 1 and m > 0 else prior
+    k = 4
+    cv = math.sqrt(((n - 1) * cv_s ** 2 + k * prior ** 2) / (n - 1 + k)) if n > 1 else prior
+    cv *= math.sqrt(1 + 1 / max(n, 1))
+    cv = clip(cv * (calib or {}).get(col, 1.0), 0.12, 2.0)
+    return {"mean": round(mean, 2), "sd": round(max(cv * mean, 0.5), 2), "dist": "gamma", "f": round(f, 3)}
 
 
 def game_model(home, away, teams, lg, spread_line, total_line):
@@ -371,9 +433,8 @@ def build(season):
     teams, lg = team_context(stats, team_stats, sched, week)
     cvs = prior_cvs(stats, week)
     rates = prior_rates(stats, week)
-    import backtest  # widen ranges by how well they covered past weeks
-    calib = backtest.calibrate(backtest.run(season, data=(stats, team_stats, sched)))
-    print("range multipliers:", calib)
+    prev = prev_summary(load_prev(season))
+    calib = None   # spreads come from model_params.json, fitted on past seasons
 
     inj_latest = {}
     if len(inj):
@@ -433,7 +494,7 @@ def build(season):
                     if players[pid]["team"] != tm:
                         continue
                     pg = stats[(stats.player_id == pid) & (stats.week < w)].sort_values("week")
-                    players[pid]["proj"][r.game_id] = project_player(pg, players[pid]["pos"], opp, teams, lg, gs, cvs, rates, calib)
+                    players[pid]["proj"][r.game_id] = project_player(pg, players[pid]["pos"], opp, teams, lg, gs, cvs, rates, calib, prev.get(pid))
                     game["players"][tm].append(pid)
             games.append(game)
 
@@ -454,7 +515,7 @@ def build(season):
     out = {
         "updated": dt.datetime.now(dt.timezone.utc).isoformat(timespec="minutes"),
         "season": season, "week": week, "stats_through": int(stats.week.max()),
-        "weeks": weeks, "league": lg, "calibration": calib, "team_names": TEAM_NAMES,
+        "weeks": weeks, "league": lg, "calibration": calib or {}, "team_names": TEAM_NAMES,
         "teams": teams, "games": games, "players": players,
     }
     return rnd(out)

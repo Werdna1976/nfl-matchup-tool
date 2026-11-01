@@ -68,16 +68,30 @@ function poissonCdf(k, lam) {
   for (let i = 1; i <= Math.floor(k); i++) { term *= lam / i; sum += term; }
   return Math.min(1, sum);
 }
+function gammaCdf(x, mean, sd) {
+  if (mean <= 0 || sd <= 0) return x >= mean ? 1 : 0;
+  const shape = (mean / sd) ** 2, scale = sd ** 2 / mean;
+  return gammaincLower(shape, x / scale);
+}
+// "gmix": a normal-game curve plus a small dud-game curve (see scripts/model.py)
+function gmixParts(p) {
+  const mb = p.mean / (1 - p.w + p.w * p.r), sb = p.mean > 0 ? p.sd * mb / p.mean : p.sd;
+  return [[1 - p.w, mb, sb], [p.w, mb * p.r, sb * p.k]];
+}
+function totalSd(p) {
+  if (p.dist !== "gmix") return p.sd;
+  const m2 = gmixParts(p).reduce((a, [w, m, s]) => a + w * (s * s + m * m), 0);
+  return Math.sqrt(Math.max(m2 - p.mean ** 2, 0));
+}
 function cdf(x, p) {
   if (p.dist === "poisson") return poissonCdf(Math.floor(x), p.mean);
   if (p.dist === "normal") return 0.5 * (1 + erf((x - p.mean) / (p.sd * Math.SQRT2)));
-  if (p.mean <= 0 || p.sd <= 0) return x >= p.mean ? 1 : 0;
-  const shape = (p.mean / p.sd) ** 2, scale = p.sd ** 2 / p.mean;
-  return gammaincLower(shape, x / scale);
+  if (p.dist === "gmix") return p.mean <= 0 ? (x >= 0 ? 1 : 0) : gmixParts(p).reduce((a, [w, m, s]) => a + w * gammaCdf(x, m, s), 0);
+  return gammaCdf(x, p.mean, p.sd);
 }
 function quantile(q, p) {
   if (p.dist === "poisson") { let k = 0; while (poissonCdf(k, p.mean) < q && k < 50) k++; return k; }
-  let lo = p.dist === "normal" ? p.mean - 10 * p.sd : 0, hi = p.mean + 12 * p.sd + 1;
+  let lo = p.dist === "normal" ? p.mean - 10 * p.sd : 0, hi = p.mean + 12 * totalSd(p) + 1;
   for (let i = 0; i < 70; i++) { const m = (lo + hi) / 2; if (cdf(m, p) < q) lo = m; else hi = m; }
   return (lo + hi) / 2;
 }
@@ -544,7 +558,8 @@ function adjustForInjuries() {
               if (!d || !mp[k] || mp[k].mean * eff <= d.mean) continue;
               const target = mp[k].mean * eff;
               const was = Math.max(d.mean, 0.05 * target);
-              Object.assign(d, { mean: was, sd: mp[k].sd * was / Math.max(mp[k].mean, 1e-6) });
+              // take the starter's shape, scaled to the backup's own average
+              Object.assign(d, { ...mp[k], f: d.f }); ROLES.scale(d, was / Math.max(mp[k].mean, 1e-6));
               ROLES.scale(d, (was + share * (target - was)) / was);
             }
             ROLES.because(backup, g.id, m);
@@ -1056,10 +1071,10 @@ function openHow() {
   card.innerHTML = `
     <div class="modal-head"><h2>How the model works</h2><button class="x" aria-label="Close">×</button></div>
     <div class="panel">
-      <p><b>Starting point.</b> Each player's recent average, where a game four weeks back counts half as much as last week's.</p>
+      <p><b>Starting point.</b> Each player's recent average, where a game four weeks back counts half as much as last week's, pulled part of the way toward his per-game average last season (a few games' worth) so a hot or cold start doesn't run away with the projection.</p>
       <p><b>Game script.</b> The betting spread and total tell us how many points each team should score and who is likely to be trailing. Trailing teams throw more, leading teams run more. That shifts pass attempts, carries, and targets.</p>
       <p><b>Matchup.</b> Yardage gets scaled by how many yards the opponent allows per pass, per carry, and per target to that position (WR, TE, RB), compared to the league. Small samples are pulled toward average so one blowout doesn't swing things too far. Touchdowns scale with the team's implied points, blended with the league TD rate so a player who hasn't scored yet still has a real chance.</p>
-      <p><b>Ranges.</b> Each player's own game-to-game swing, blended with the typical swing for that position, then widened until past weeks' 80% ranges really did catch about 80% of results. Touchdowns and interceptions use count odds (Poisson). Totals and spreads use the market line with a 13-point typical miss, nudged 20% toward a stats-only score model.</p>
+      <p><b>Ranges.</b> Bigger roles swing less in relative terms, so the spread depends on the size of the projection, lightly blended with the player's own game-to-game swing. Each stat mixes a "normal game" curve with a small "dud game" curve (hurt early, benched, schemed out), so the upper tail isn't stretched to cover those games. Every weight was fitted on 2022–2024 game logs and checked on 2025 and this season: results land above the model's 90th and 95th percentiles about 10% and 5% of the time, including for top players. Touchdowns and interceptions use count odds (Poisson), pulled toward the league rate for the player's volume. Totals and spreads use the market line with a 13-point typical miss, nudged 20% toward a stats-only score model.</p>
       <p><b>Teammates who are out.</b> When a player is listed Out (or Doubtful, counted at 75%), his carries go to the other backs and most of his targets to the other receivers, weighted toward his position. A starting QB out hands his volume to the backup at lower efficiency. Where a teammate has played games without him, those real numbers are blended in. Changed numbers carry a ▲ or ▼.</p>
       <p><b>What it doesn't know.</b> Injuries during the week until the page refreshes, weather beyond what's listed, coaching changes, and snap-count news. A player listed Questionable could be on a snap limit.</p>
       <p><b>Using it for alt lines.</b> If the model says 80% and Polymarket charges 70¢, that's a possible edge. If it charges 85¢, it isn't. Multiplying many 80% legs drops fast: five of them is about 33%.</p>
@@ -1067,8 +1082,8 @@ function openHow() {
     </div>
     ${bt.length ? `<div class="panel"><h3>Track record this season</h3>
       <div class="small muted" style="margin-bottom:6px">${esc(BACKTEST.note)} A well-tuned model lands about 80% inside its 80% range and 50% inside its 50% range. "Avg miss" is the average gap between projection and result.</div>
-      <div class="table-wrap"><table><thead><tr><th>Stat</th><th>Results</th><th>Inside 80% range</th><th>Inside 50% range</th><th>Avg miss</th><th>Avg miss using season avg</th></tr></thead>
-      <tbody>${bt.map((r) => `<tr><td>${esc(r.stat)}</td><td>${r.n}</td><td>${pct(r.in80)}</td><td>${pct(r.in50)}</td><td>${fmt(r.mae, 1)}</td><td>${fmt(r.mae_season_avg, 1)}</td></tr>`).join("")}</tbody></table></div></div>` : ""}`;
+      <div class="table-wrap"><table><thead><tr><th>Stat</th><th>Results</th><th>Inside 80% range</th><th>Inside 50% range</th><th title="Should be about 10%">Above 90th pct</th><th>Avg miss</th><th>Avg miss using season avg</th></tr></thead>
+      <tbody>${bt.map((r) => `<tr><td>${esc(r.stat)}</td><td>${r.n}</td><td>${pct(r.in80)}</td><td>${pct(r.in50)}</td><td>${r.above90 == null ? "–" : pct(r.above90)}</td><td>${fmt(r.mae, 1)}</td><td>${fmt(r.mae_season_avg, 1)}</td></tr>`).join("")}</tbody></table></div></div>` : ""}`;
   card.querySelector(".x").onclick = closeModal;
   $("#modal").hidden = false;
 }
