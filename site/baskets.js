@@ -638,6 +638,9 @@ const BASKETS = (() => {
     el.innerHTML = head(status, win.open) + (baskets.length
       ? `<div class="baskets">${baskets.map((b) => card(b, priced)).join("")}</div>`
       : "") + (realCount(baskets) < SHOWN ? `<div class="note">Only ${realCount(baskets)} of 6 storylines could be built here: the rest happen in fewer than 1 game in 5, or couldn't be built without longshot legs, stacked bets${priced ? ", or markets too thin for a $" + STAKE + " bet" : ""} while paying more than 4x net.</div>` : "") + lotto + foot(priced);
+    el.querySelectorAll("[data-lotto-g]").forEach((btn) => (btn.onclick = () => {
+      el.querySelectorAll(`.lotto [data-g="${btn.dataset.lottoG}"]`).forEach((c) => c.classList.toggle("off"));
+    }));
     const rb = el.querySelector("[data-pm-refresh]");
     const reprice = () => { delete CACHE[g.id]; delete LISTS[A.league]; render(el, g, A); };
     if (rb) rb.onclick = reprice;
@@ -647,58 +650,69 @@ const BASKETS = (() => {
 
   // ---------------------------------------------------------------- lottery tickets
 
-  // Long shots where the model's chance beats the price (with prices), or each regular's big-night
-  // line (without), plus the pairs that tend to hit together.
+  // Long shots: with prices, real Polymarket markets at 4-30¢ priced at or below the model's chance
+  // (a 13% shot is only worth buying around 13¢ or less). Without prices, each regular's big-night
+  // line on Polymarket's own ladder (25+, 30+ points; 8+, 10+ rebounds), as a preview.
+  // Then up to 7 small groups (A-G) of them that tend to hit on the same night.
   function lottery(legs, priced) {
-    const cand = legs.filter((l) => (priced ? l.price >= LOTTO_MIN && l.price <= LOTTO_MAX && l.p > l.price : l.lotto))
+    const cand = legs.filter((l) => (priced ? l.kind === "player" && l.price >= LOTTO_MIN && l.price <= LOTTO_MAX && l.price <= l.p + 0.01 : l.lotto))
       .sort((a, b) => (priced ? b.p / b.price - a.p / a.price : b.p - a.p));
     const list = [];
     for (const l of cand) if (list.length < LOTTO_SHOWN && !list.some((o) => o.grp === l.grp)) list.push(l);
-    // Groups that tend to hit together: try every set of 2 to 6 from the list (under 1,000 sets),
-    // keep the ones whose combined chance clearly beats the chances multiplied, and show a few
-    // of different sizes that don't mostly repeat each other.
+    // try every set of 2 to 6 from the list (under 1,000 sets) and keep the ones whose combined
+    // chance clearly beats the chances multiplied
     const groups = [];
     for (let mask = 3; mask < 1 << list.length; mask++) {
       const ix = list.map((_, i) => i).filter((i) => mask & (1 << i));
       if (ix.length < 2 || ix.length > 6) continue;
       const gl = ix.map((i) => list[i]), hits = popcount(gl.reduce((acc, l) => (acc ? and(acc, l.bits) : l.bits), null));
-      if (hits < 30) continue;   // under 1 in 200 simulated games is too rare to judge how they move together
+      if (hits < 18) continue;   // under 3 in 1,000 simulated games is too rare to judge how they move together
       const pj = hits / N, prod = gl.reduce((m, l) => m * l.p, 1), lift = pj / prod;
       if (lift < 1.1 + 0.1 * ix.length) continue;
       const pay = priced ? 1 / gl.reduce((m, l) => m * l.price, 1) : 1 / pj;
       // lift per added leg, so a strong pair and a strong six-leg set compete fairly
-      groups.push({ ix, pj, prod, lift, pay, ev: priced ? pj * pay - 1 : null, score: lift ** (1 / (ix.length - 1)) * (priced ? Math.max(0.2, 1 + pj * pay - 1) : 1) });
+      groups.push({ ix, pj, prod, lift, pay, ev: priced ? pj * pay - 1 : null, score: lift ** (1 / (ix.length - 1)) });
     }
     groups.sort((x, y) => y.score - x.score);
-    // the best group of each size first (2 up to 6, where the math allows it), then the next best;
-    // groups share at most one leg so the suggestions don't all lean on the same player
-    const picked = [], fresh = (gr) => picked.every((o) => o.ix.filter((i) => gr.ix.includes(i)).length <= 1);
+    // the best group of each size first (2 up to 6, where the math allows it), then the next best,
+    // skipping any that mostly repeat one already picked
+    const picked = [], fresh = (gr) => picked.every((o) => o.ix.filter((i) => gr.ix.includes(i)).length <= Math.max(1, Math.floor(Math.min(o.ix.length, gr.ix.length) / 2)));
     for (let k = 2; k <= 6; k++) { const gr = groups.find((x) => x.ix.length === k && fresh(x)); if (gr) picked.push(gr); }
-    for (const gr of groups) if (picked.length < 5 && !picked.includes(gr) && fresh(gr)) picked.push(gr);
-    picked.sort((x, y) => x.ix.length - y.ix.length);
-    return { list, pairs: picked };
+    for (const gr of groups) if (picked.length < 7 && !picked.includes(gr) && fresh(gr)) picked.push(gr);
+    picked.sort((x, y) => x.ix.length - y.ix.length || y.score - x.score);
+    return { list, groups: picked };
   }
 
-  function lotteryHtml({ list, pairs }, priced) {
-    if (!list.length) return `<div class="lotto"><h3>Lottery tickets</h3><div class="empty">${priced ? "No long shots on Polymarket for this game where the model's chance beats the price and $20 can be filled." : "No long shots to list for this game."}</div></div>`;
+  // One compact table: the long shots on the left, and a column per group (A-G) on the right with
+  // a dot on each leg in it. Clicking a group's letter folds that column away.
+  function lotteryHtml({ list, groups }, priced) {
+    if (!list.length) return `<div class="lotto"><h3>Lottery tickets</h3><div class="empty">${priced ? "No long shots on Polymarket for this game priced at or below the model's chance with enough depth for $20." : "No long shots to list for this game."}</div></div>`;
     const pct1 = (p) => `${p < 0.01 ? String(+(p * 100).toPrecision(1)) : p < 0.1 ? (p * 100).toFixed(1) : Math.round(p * 100)}%`;
+    const L = "ABCDEFG";
+    const gh = groups.map((gr, j) => `<th class="lg" data-g="${j}"><button type="button" class="lg-btn" data-lotto-g="${j}" title="Hide or show group ${L[j]}">${L[j]}</button></th>`).join("");
+    const rows = list.map((l, i) => `<tr><td class="muted">${i + 1}</td>
+      <td class="lt-leg">${l.url ? `<a href="${esc(l.url)}" target="_blank" rel="noopener" title="${esc(l.src || "")}">${esc(l.label)}</a>` : esc(l.label)}${l.q ? ` <span class="badge q">${esc(l.q)}</span>` : ""}</td>
+      <td><b>${pct1(l.p)}</b></td>
+      ${priced ? `<td>${cents(l.price)}</td><td>${xs(1 / l.price)}</td>` : `<td>${xs(1 / l.p)}</td>`}
+      ${groups.length ? `<td class="lg-gap"></td>` : ""}${groups.map((gr, j) => `<td class="lg" data-g="${j}">${gr.ix.includes(i) ? `<span class="lg-dot g${j}">●</span>` : ""}</td>`).join("")}</tr>`).join("");
+    const span = priced ? 5 : 4;
+    const foot = groups.length ? [
+      ["Legs", (gr) => gr.ix.length],
+      ["All hit", (gr) => `<span title="${pct1(gr.prod)} if they were unrelated">${pct1(gr.pj)}</span>`],
+      [priced ? "Pays" : "Break-even", (gr) => xs(gr.pay)],
+      ...(priced ? [["Return", (gr) => `<span class="${gr.ev >= 0 ? "edge-good" : "edge-bad"}">${gr.ev >= 0 ? "+" : "−"}${Math.abs(Math.round(gr.ev * 100))}%</span>`]] : []),
+    ].map(([name, f]) => `<tr class="lg-foot"><td colspan="${span}" class="muted small" style="text-align:right">${name}</td><td class="lg-gap"></td>${groups.map((gr, j) => `<td class="lg small" data-g="${j}"><span>${f(gr)}</span></td>`).join("")}</tr>`).join("") : "";
     return `
       <div class="lotto">
         <h3>Lottery tickets</h3>
         <div class="muted small">${priced
-          ? "Long shots priced 4–30¢ where the model's chance is higher than the price, best value first. Most of these lose; bet small."
-          : "Each regular's big-night line (about a 1-in-8 chance). No Polymarket prices yet, so compare the break-even payout with what Polymarket pays."}</div>
-        <div class="table-wrap"><table>
-          <thead><tr><th>#</th><th>Leg</th><th>Model</th>${priced ? "<th>Price</th><th>Pays</th><th title=\"Model chance divided by price\">Value</th>" : "<th>Break-even</th>"}</tr></thead>
-          <tbody>${list.map((l, i) => `<tr><td>${i + 1}</td>
-            <td>${l.url ? `<a href="${esc(l.url)}" target="_blank" rel="noopener" title="${esc(l.src || "")}">${esc(l.label)}</a>` : esc(l.label)}${l.q ? ` <span class="badge q">${esc(l.q)}</span>` : ""}</td>
-            <td><b>${pct1(l.p)}</b></td>
-            ${priced ? `<td>${cents(l.price)}</td><td>${xs(1 / l.price)}</td><td class="edge-good">${(l.p / l.price).toFixed(1)}x</td>` : `<td>${xs(1 / l.p)}</td>`}</tr>`).join("")}</tbody>
+          ? "Polymarket long shots at 4–30¢, only ones priced at or below the model's chance (a 13% shot at about 13¢ or less), best value first. Most of these lose; bet small."
+          : "Preview: each regular's big-night line on Polymarket's own ladder. Prices come in on game day (NBA) or the day before (NFL); only buy one priced at or below its chance here."}</div>
+        <div class="table-wrap"><table class="lotto-t">
+          <thead><tr><th>#</th><th class="lt-leg">Leg</th><th>Model</th>${priced ? "<th>Price</th><th>Pays</th>" : "<th>Break-even</th>"}${groups.length ? `<th class="lg-gap"></th>` : ""}${gh}</tr></thead>
+          <tbody>${rows}${foot}</tbody>
         </table></div>
-        ${pairs.length ? `<div class="small"><b>Go well together:</b> each of these is a long shot on its own. These small groups tend to hit on the same kind of night, so a group hits more often than its chances multiplied. Bet them singly or as one of these groups, not all ten together.</div>
-          <ul class="small lotto-pairs">${pairs.map((pr) => `<li><b>${pr.ix.map((i) => `#${i + 1}`).join(" + ")}</b> (${pr.ix.length} legs): all hit ${pct1(pr.pj)} of the time (${pct1(pr.prod)} if unrelated)${priced
-            ? ` · pays ${xs(pr.pay)} · expected return <span class="${pr.ev >= 0 ? "edge-good" : "edge-bad"}">${pr.ev >= 0 ? "+" : "−"}${Math.abs(Math.round(pr.ev * 100))}%</span>`
-            : ` · break-even ${xs(pr.pay)}`}</li>`).join("")}</ul>` : ""}
+        ${groups.length ? `<div class="small muted">Each is a long shot on its own. Lettered columns are small groups that tend to hit on the same night, so a group hits more often than its chances multiplied; bet a group as its own parlay, not all ten together. Click a letter to fold that column away.</div>` : `<div class="small muted">None of these move together strongly enough to suggest a group.</div>`}
       </div>`;
   }
 

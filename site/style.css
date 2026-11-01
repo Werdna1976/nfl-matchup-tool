@@ -238,6 +238,17 @@ td.out-row { text-align: left; white-space: normal; color: var(--muted); font-si
 .basket td:first-child { white-space: normal; }
 .lotto { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 10px; }
 .lotto h3 { margin: 0 0 4px; }
-.lotto-pairs { margin: 4px 0 0; padding-left: 18px; }
 .basket .theme { margin: 4px 0 2px; }
 .lotto td:nth-child(2), .lotto th:nth-child(2) { text-align: left; }
+.lotto-t { width: auto; }
+.lotto-t .lt-leg { text-align: left; max-width: 260px; }
+.lotto-t .lg-gap { width: 10px; padding: 0; border: none; }
+.lotto-t .lg { text-align: center; min-width: 44px; padding-left: 4px; padding-right: 4px; white-space: nowrap; }
+.lotto-t .lg-btn { font: inherit; font-weight: 700; padding: 1px 8px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: inherit; cursor: pointer; }
+.lotto-t .lg.off { min-width: 0; width: 22px; }
+.lotto-t td.lg.off > * { display: none; }
+.lotto-t th.lg.off .lg-btn { opacity: 0.45; padding: 1px 4px; }
+.lotto-t .lg-foot td { border-top: 1px solid var(--line); }
+.lg-dot { font-size: 15px; }
+.lg-dot.g0 { color: #e8a33d; } .lg-dot.g1 { color: #4fa3e0; } .lg-dot.g2 { color: #5cbf7a; } .lg-dot.g3 { color: #d65f8a; }
+.lg-dot.g4 { color: #9b7be0; } .lg-dot.g5 { color: #3fbfb5; } .lg-dot.g6 { color: #c9a227; }
