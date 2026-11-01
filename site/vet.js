@@ -80,7 +80,40 @@ const VET = (() => {
     return Math.exp((lo + hi) / 2);
   }
 
+  // ------------------------------------------------------------ the adjusted chance
+
+  // the sportsbook line's chance for a game bet (null for props, or with no real line)
+  function bookChance(row, g) {
+    if (row.kind === "player" || /stats model|no line/i.test(g.line_src || "")) return null;
+    const gm = g.model;
+    if (row.kind === "total" && g.total != null) {
+      const under = Phi((row.line - g.total) / gm.total.sd);
+      return row.side === "over" ? 1 - under : under;
+    }
+    if ((row.kind === "spread" || row.kind === "ml") && g.spread != null) {
+      const mean = row.side === g.home ? g.spread : -g.spread;
+      return 1 - Phi((-(row.kind === "spread" ? row.line : 0) - mean) / gm.margin.sd);
+    }
+    return null;
+  }
+  // the calibrated model, blended with Polymarket's midpoint (and the sportsbook line for game bets)
+  function blend(pCal, m, pBook) {
+    const parts = [[pCal, W_MODEL]];
+    if (m != null) parts.push([m, 1 - W_MODEL]);
+    if (pBook != null) parts.push([pBook, 1 - W_MODEL]);
+    const tw = parts.reduce((a, [, w]) => a + w, 0);
+    return parts.reduce((a, [v, w]) => a + v * w, 0) / tw;
+  }
+  // Just the adjusted chance, without the news and ladder checks: cheap enough for every leg a
+  // basket might use, so a basket's expected return isn't built on the raw model alone.
+  function adjusted(row, { A, g }) {
+    const pCal = calibrated(A.calib(calibKey(row)), row.p, overLike(row, g)) ?? row.p;
+    return blend(pCal, mid(row), bookChance(row, g));
+  }
+
   // ------------------------------------------------------------ one row's checks
+
+  const SCALES = new WeakMap();
 
   function grade(row, { A, g, legs }) {
     const reasons = [];   // {lvl: ok | warn | bad, text}
@@ -98,14 +131,8 @@ const VET = (() => {
     // 2. game lines: what the sportsbooks' line says
     let pBook = null;
     if (row.kind !== "player") {
-      const gm = g.model, book = /stats model|no line/i.test(g.line_src || "") ? null : g;
-      if (row.kind === "total" && book?.total != null) {
-        const under = Phi((row.line - book.total) / gm.total.sd);
-        pBook = row.side === "over" ? 1 - under : under;
-      } else if ((row.kind === "spread" || row.kind === "ml") && book?.spread != null) {
-        const mean = row.side === g.home ? book.spread : -book.spread;
-        pBook = 1 - Phi((-(row.kind === "spread" ? row.line : 0) - mean) / gm.margin.sd);
-      }
+      const book = /stats model|no line/i.test(g.line_src || "") ? null : g;
+      pBook = bookChance(row, g);
       const what = row.kind === "total" ? `total ${book?.total}` : `spread ${book?.spread > 0 ? `${g.home} -${book?.spread}` : book?.spread < 0 ? `${g.away} -${-book?.spread}` : "pick'em"}`;
       if (pBook != null) {
         const e = pBook - row.price, src = String(g.line_src || "sportsbook").replace(/\s*\(live\)/, "");
@@ -119,9 +146,13 @@ const VET = (() => {
     const pl = row.kind === "player" ? A.player(row.pid) : null;
     if (pl) {
       const ladder = legs.filter((l) => l.kind === "player" && l.pid === row.pid && l.key === row.key);
-      const rs = ladder.map((l) => impliedScale(A, pl, l)).filter((r) => r != null);
-      if (rs.length) {
-        const r = median(rs), against = row.side === "over" ? 1 - r : r - 1, mean = A.mean(pl, row.key);
+      // the same for every row of this ladder, so work it out once per set of legs
+      if (!SCALES.has(legs)) SCALES.set(legs, new Map());
+      const memo = SCALES.get(legs), mk = `${row.pid}|${row.key}`;
+      if (!memo.has(mk)) { const rs = ladder.map((l) => impliedScale(A, pl, l)).filter((r) => r != null); memo.set(mk, rs.length ? median(rs) : null); }
+      const r = memo.get(mk);
+      if (r != null) {
+        const against = row.side === "over" ? 1 - r : r - 1, mean = A.mean(pl, row.key);
         const how = row.key === "anytd" || !(mean > 0)
           ? `rates his ${row.key === "anytd" ? "touchdown" : A.statLabel(row.key)} chances ${Math.round(Math.abs(1 - r) * 100)}% ${r < 1 ? "lower" : "higher"} than the model does`
           : `prices him for about ${fmtN(mean * r)} ${A.statLabel(row.key)}; the model projects ${fmtN(mean)}`;
@@ -165,11 +196,7 @@ const VET = (() => {
     else if (row.edge >= BIG_EDGE) add("warn", `${Math.round(row.edge * 100)}¢ is a big edge: treat it as a question, not an answer`);
 
     // the adjusted chance: the calibrated model, blended with Polymarket's midpoint (and the sportsbook line for game bets)
-    const parts = [[pCal, W_MODEL]];
-    if (m != null) parts.push([m, 1 - W_MODEL]);
-    if (pBook != null) parts.push([pBook, 1 - W_MODEL]);
-    const tw = parts.reduce((a, [, w]) => a + w, 0);
-    const pAdj = parts.reduce((a, [v, w]) => a + v * w, 0) / tw;
+    const pAdj = blend(pCal, m, pBook);
     return finish({ ...row, vet: { reasons, pCal, pBook, pAdj, adj: pAdj - row.price, drift: null } });
   }
 
@@ -254,5 +281,5 @@ const VET = (() => {
 
   const RULES = `Each bet is checked before it's listed: the model's record on that kind of bet, whether Polymarket's whole line ladder sees the same player the model does, the sportsbook line (game bets), the injury report and practice notes, ESPN headlines from the last 4 days, teammates who are questionable, how far the price moved in the last day, and whether the edge is too big to be real. <b>Verified</b> passes everything with at least ${Math.round(MIN_ADJ * 100)}¢ of edge left after adjusting; <b>Caution</b> has something to read first; <b>Skip</b> failed a check. "Adj." is the edge after blending the model with Polymarket's own price, which is the number to trust over the raw edge.`;
 
-  return { grade, drift, cell, why, sort, RULES, MIN_ADJ, calibrated, impliedScale };
+  return { grade, adjusted, drift, cell, why, sort, RULES, MIN_ADJ, calibrated, impliedScale };
 })();
