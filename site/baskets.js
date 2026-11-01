@@ -724,11 +724,11 @@ const BASKETS = (() => {
     if (!priced) return box(`<div class="empty">Single bets priced below the model's chance show here once Polymarket has player props for this game (game day for the NBA, the day before for the NFL, or within 24 hours of the start).</div>`);
     const list = underpriced(legs);
     const rows = list.map((l, i) => `<tr><td class="muted">${i + 1}</td>
-      <td class="lt-leg">${l.url ? `<a href="${esc(l.url)}" target="_blank" rel="noopener" title="${esc(l.src || "")}">${esc(l.label)}</a>` : esc(l.label)}${l.q ? ` <span class="badge q">${esc(l.q)}</span>` : ""}${l.flags.length ? ` ${l.flags.map((f) => `<span class="badge q">${esc(f)}</span>`).join(" ")}` : ""}${l.range ? `<div class="muted small">${esc(l.range)}</div>` : ""}</td>
+      <td class="lt-leg">${l.url ? `<a href="${esc(l.url)}" target="_blank" rel="noopener" title="${esc(l.src || "")}">${esc(l.label)}</a>` : esc(l.label)}${l.q || l.flags.length ? `<div class="tags">${[l.q, ...l.flags].filter(Boolean).map((f) => `<span class="badge q">${esc(f)}</span>`).join(" ")}</div>` : ""}${l.range ? `<div class="muted small">${esc(l.range)}</div>` : ""}</td>
       <td><b>${pct(l.p)}</b></td><td>${cents(l.price)}${l.bid != null ? `<div class="muted small">bid ${cents(l.bid)}</div>` : ""}</td>
       <td class="edge-good">+${Math.round(l.edge * 100)}</td><td class="edge-good">+${Math.round((l.p / l.price - 1) * 100)}%</td></tr>`).join("");
     return box(`<div class="muted small">Single bets, no parlay needed: Polymarket's ask is below the model's chance by at least ${Math.round(UNDER_MIN_EDGE * 100)}¢, biggest gap first. Each line ladder (a spread, a total, one player's stat) is one row: its best-priced line, with the range of lines that are also cheap. The list is spread across bet types and players rather than repeating one kind of mispricing. Each can take a $${STAKE} bet near the price shown. Long shots under ${Math.round(LOTTO_MAX * 100)}¢ are in Lottery tickets below.</div>
-      <div class="table-wrap"><table class="lotto-t">
+      <div class="table-wrap"><table class="lotto-t under-t">
         <thead><tr><th>#</th><th class="lt-leg">Bet</th><th>Model</th><th>Price</th><th title="Model chance minus price, in cents">Edge</th><th title="Expected profit per $1 if the model is right">Return</th></tr></thead>
         <tbody>${rows}</tbody>
       </table></div>`);

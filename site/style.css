@@ -252,3 +252,6 @@ td.out-row { text-align: left; white-space: normal; color: var(--muted); font-si
 .lg-dot { font-size: 15px; }
 .lg-dot.g0 { color: #e8a33d; } .lg-dot.g1 { color: #4fa3e0; } .lg-dot.g2 { color: #5cbf7a; } .lg-dot.g3 { color: #d65f8a; }
 .lg-dot.g4 { color: #9b7be0; } .lg-dot.g5 { color: #3fbfb5; } .lg-dot.g6 { color: #c9a227; }
+.under-t .lt-leg { min-width: 340px; max-width: 460px; }
+.under-t .tags { margin-top: 2px; display: flex; flex-wrap: wrap; gap: 4px; }
+.under-t td { vertical-align: top; }
