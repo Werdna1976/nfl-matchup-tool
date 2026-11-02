@@ -2,27 +2,56 @@
 
 // ---------------------------------------------------------------- stat definitions
 
+// short: column name on its own; sub: column name under its group header (Passing / Rushing / ...)
 const STATS = {
-  att: { label: "Pass attempts", short: "Att", dec: 1 },
-  cmp: { label: "Completions", short: "Cmp", dec: 1 },
-  pyd: { label: "Passing yards", short: "Pass yds", dec: 0 },
-  ptd: { label: "Passing TDs", short: "Pass TD", dec: 2, count: true },
-  int: { label: "Interceptions", short: "INT", dec: 2, count: true },
-  car: { label: "Rush attempts", short: "Rush att", dec: 1 },
-  ryd: { label: "Rushing yards", short: "Rush yds", dec: 0 },
-  rtd: { label: "Rushing TDs", short: "Rush TD", dec: 2, count: true },
-  tgt: { label: "Targets", short: "Tgt", dec: 1 },
-  rec: { label: "Receptions", short: "Rec", dec: 1 },
-  yds: { label: "Receiving yards", short: "Rec yds", dec: 0 },
-  td: { label: "Receiving TDs", short: "Rec TD", dec: 2, count: true },
-  rry: { label: "Rush + rec yards", short: "Rush+rec yds", dec: 0 },
+  att: { label: "Pass attempts", short: "Att", sub: "Att", group: "Passing", dec: 1 },
+  cmp: { label: "Completions", short: "Cmp", sub: "Cmp", group: "Passing", dec: 1 },
+  pyd: { label: "Passing yards", short: "Pass yds", sub: "Yds", group: "Passing", dec: 0 },
+  ptd: { label: "Passing TDs", short: "Pass TD", sub: "TD", group: "Passing", dec: 2, count: true },
+  int: { label: "Interceptions", short: "INT", sub: "INT", group: "Passing", dec: 2, count: true },
+  car: { label: "Rush attempts", short: "Rush att", sub: "Att", group: "Rushing", dec: 1 },
+  ryd: { label: "Rushing yards", short: "Rush yds", sub: "Yds", group: "Rushing", dec: 0 },
+  rtd: { label: "Rushing TDs", short: "Rush TD", sub: "TD", group: "Rushing", dec: 2, count: true },
+  tgt: { label: "Targets", short: "Tgt", sub: "Tgt", group: "Receiving", dec: 1 },
+  rec: { label: "Receptions", short: "Rec", sub: "Rec", group: "Receiving", dec: 1 },
+  yds: { label: "Receiving yards", short: "Rec yds", sub: "Yds", group: "Receiving", dec: 0 },
+  td: { label: "Receiving TDs", short: "Rec TD", sub: "TD", group: "Receiving", dec: 2, count: true },
+  rry: { label: "Rush + rec yards", short: "Rush+rec yds", sub: "Rush+rec yds", group: "Total", dec: 0 },
 };
+// Full stat line for each position: QBs pass and run, backs run and catch, receivers catch and run
 const POS_STATS = {
   QB: ["att", "cmp", "pyd", "ptd", "int", "car", "ryd", "rtd"],
   RB: ["car", "ryd", "rtd", "tgt", "rec", "yds", "td", "rry"],
-  WR: ["tgt", "rec", "yds", "td"],
-  TE: ["tgt", "rec", "yds", "td"],
+  WR: ["tgt", "rec", "yds", "td", "car", "ryd", "rtd", "rry"],
+  TE: ["tgt", "rec", "yds", "td", "car", "ryd", "rtd", "rry"],
 };
+// Two header rows: the group (Passing, Rushing, Receiving) over its columns. `lead` and `tail`
+// are the plain columns before and after the stats. A thin rule starts each group.
+const groupStart = (keys, i) => i === 0 || STATS[keys[i]].group !== STATS[keys[i - 1]].group;
+function statHead(keys, lead, tail = []) {
+  const groups = [];
+  keys.forEach((k, i) => { if (groupStart(keys, i)) groups.push({ name: STATS[k].group, n: 1 }); else groups[groups.length - 1].n++; });
+  const th = (t) => `<th rowspan="2">${t}</th>`;
+  return `<thead>
+    <tr class="grp">${lead.map(th).join("")}${groups.map((g) => `<th colspan="${g.n}" class="gs">${g.name}</th>`).join("")}${tail.map(th).join("")}</tr>
+    <tr>${keys.map((k, i) => `<th class="${groupStart(keys, i) ? "gs" : ""}">${STATS[k].sub}</th>`).join("")}</tr>
+  </thead>`;
+}
+const gsCls = (keys, i) => (groupStart(keys, i) ? ` class="gs"` : "");
+
+// ---------------------------------------------------------------- team records
+
+function recText(r) { return r ? `${r.w}-${r.l}${r.t ? `-${r.t}` : ""}` : ""; }
+function record(ab) { return recText(DATA.teams[ab]?.record); }
+// "5-2 · 2-1 away · Won 2 · last 5 WWLWW"
+function recordLine(ab, where) {
+  const r = DATA.teams[ab]?.record;
+  if (!r) return where === "home" ? "Home" : "Away";
+  const [w, l, t] = r[where];
+  const streak = r.streak ? `${r.streak[0] === "W" ? "Won" : r.streak[0] === "L" ? "Lost" : "Tied"} ${r.streak.slice(1)}` : "";
+  const div = r.div.some((x) => x) ? ` · ${recText({ w: r.div[0], l: r.div[1], t: r.div[2] })} division` : "";
+  return `<b class="rec">${recText(r)}</b><span class="rec-more"> · ${w}-${l}${t ? `-${t}` : ""} ${where}${div}${streak ? ` · ${streak}` : ""}${r.last5 ? ` · last ${r.last5.length}: ${r.last5}` : ""}</span><span class="rec-short"> ${where}</span>`;
+}
 // the props worth betting, by position, for the alt-line finder
 const FEATURED = { QB: ["att", "cmp", "pyd", "ptd"], RB: ["car", "ryd", "rec", "yds", "rry"], WR: ["rec", "yds", "td"], TE: ["rec", "yds", "td"] };
 const POS_ORDER = ["QB", "RB", "WR", "TE"];
@@ -334,6 +363,7 @@ function renderGames() {
     <button type="button" class="gcard ${RESULT.state(g)}" data-id="${g.id}" aria-current="${!state.view && g.id === state.gameId}">
       <div class="row"><span class="teams">${RESULT.teams(g)}</span>${RESULT.badge(g) || `<span class="when">${esc(kickoff(g))}</span>`}</div>
       <div class="lines">${RESULT.state(g) === "post" ? esc(RESULT.settled(g)) : `${esc(spreadText(g))} · O/U ${g.total ?? "–"}`}</div>
+      ${record(g.away) ? `<div class="recs">${g.away} ${record(g.away)} · ${g.home} ${record(g.home)}</div>` : ""}
     </button>`).join("") || `<div class="empty">No games this week.</div>`);
   $("#games").querySelectorAll(".gcard[data-id]").forEach((b) => b.onclick = () => { state.view = null; state.gameId = b.dataset.id; state.team = null; renderGames(); });
   $("#games").querySelector("[data-props]").onclick = openProps;
@@ -369,14 +399,14 @@ function renderGame() {
   if (state.view === "props") return renderProps();
   const g = curGame();
   if (!g) { $("#game").innerHTML = ""; return; }
-  if (!state.team) state.team = g.away;
+  if (!state.team) state.team = "BOTH";
   const N = DATA.team_names;
   $("#game").innerHTML = `
     <div class="panel">
       <div class="scoreline">
-        <div class="team"><img src="${logo(g.away)}" alt=""><div><div class="name">${esc(N[g.away])}</div><div class="muted small">Away</div></div></div>
+        <div class="team"><img src="${logo(g.away)}" alt=""><div><div class="name">${esc(N[g.away])}</div><div class="muted small">${recordLine(g.away, "away")}</div></div></div>
         <div class="mid">${RESULT.mid(g, `${fmt(g.model.away_pts, 1)} – ${fmt(g.model.home_pts, 1)}`)}</div>
-        <div class="team right"><div><div class="name">${esc(N[g.home])}</div><div class="muted small">Home</div></div><img src="${logo(g.home)}" alt=""></div>
+        <div class="team right"><div><div class="name">${esc(N[g.home])}</div><div class="muted small">${recordLine(g.home, "home")}</div></div><img src="${logo(g.home)}" alt=""></div>
       </div>
       <div class="kv">
         <span>Market spread <b>${esc(spreadText(g))}</b></span>
@@ -393,8 +423,10 @@ function renderGame() {
     </div>
     <div data-tab="players">
       <div class="panel" id="players"></div>
-      <div class="panel" id="tds"></div>
-      <div class="panel" id="finder"></div>
+      <div class="wide2">
+        <div class="panel" id="tds"></div>
+        <div class="panel" id="finder"></div>
+      </div>
       <div class="panel" id="spots"></div>
     </div>
     <div data-tab="game">
@@ -494,7 +526,7 @@ function matchupSide(g, tm, opp) {
   else if (rushEdge - passEdge > 0.75) lean = `Running is the better path for ${tm} here.`;
   const prDelta = (s.pass_rate - T.off.pass_rate) * 100;
   return `<div>
-    <h3>${tm} offense vs ${opp} defense</h3>
+    <h3>${tm} offense vs ${opp} defense <span class="muted small">(${tm} ${record(tm)}, ${opp} ${record(opp)})</span></h3>
     ${matchupRow("Passing", T.rating.off_pass, O.rating.def_pass,
       `${tm} pass offense: ${fmt(T.off.pass_ypg, 0)} yds/g (${ord(RANKS[tm].off_pass)}), rating ${fmt(T.rating.off_pass, 1)}`,
       `${opp} pass defense: ${fmt(O.def.pass_ypg, 0)} yds/g allowed (${ord(RANKS[opp].def_pass)}), rating ${fmt(O.rating.def_pass, 1)}`)}
@@ -527,37 +559,43 @@ function injBadge(p) {
 
 function renderPlayers(g) {
   const el = $("#players");
-  const rows = playerRows(g, state.team).filter((p) => state.pos === "ALL" || p.pos === state.pos);
   const posList = state.pos === "ALL" ? POS_ORDER : [state.pos];
-  const tables = posList.map((pos) => {
-    const ps = rows.filter((p) => p.pos === pos);
-    if (!ps.length) return "";
-    const keys = POS_STATS[pos];
-    return `<h3>${pos}</h3><div class="table-wrap"><table>
-      <thead><tr><th>Player</th>${keys.map((k) => `<th>${STATS[k].short}</th>`).join("")}<th>Any TD</th><th>Games</th></tr></thead>
-      <tbody>${ps.map((p) => {
-        const pr = p.proj[g.id];
-        const last = p.log.slice(-3);
-        if (ROLES.outWeight(p) >= 1) return `<tr class="click" data-pid="${p.pid}"><td><span class="pname">${esc(p.name)}</span>${injBadge(p)}</td>${ROLES.outRow(keys.length + 2)}</tr>`;
-        return `<tr class="click" data-pid="${p.pid}"><td><span class="pname">${esc(p.name)}</span>${injBadge(p)}</td>
-          ${keys.map((k) => {
-            const d = pr[k];
-            const season = p.log.reduce((a, r) => a + r[k], 0) / p.log.length;
-            const l3 = last.reduce((a, r) => a + r[k], 0) / last.length;
-            const rng = STATS[k].count ? `${pct(1 - poissonCdf(0, d.mean))} for 1+` : `${Math.round(quantile(0.1, d))}–${Math.round(quantile(0.9, d))}`;
-            return `<td title="Season avg ${fmt(season, 1)} · last 3 avg ${fmt(l3, 1)}"><b>${fmt(d.mean, STATS[k].dec)}</b>${ROLES.mark(p, g.id, k, STATS[k].dec)}<span class="rng">${rng}</span></td>`;
-          }).join("")}
-          <td><b>${pct(anyTd(tdLambda(p, g)))}</b></td><td>${p.log.length}</td></tr>`;
-      }).join("")}</tbody></table></div>`;
-  }).join("");
+  const teamBlock = (tm) => {
+    const rows = playerRows(g, tm).filter((p) => state.pos === "ALL" || p.pos === state.pos);
+    const tables = posList.map((pos) => {
+      const ps = rows.filter((p) => p.pos === pos);
+      if (!ps.length) return "";
+      const keys = POS_STATS[pos];
+      return `<h4>${pos}</h4><div class="table-wrap"><table class="statline">
+        ${statHead(keys, ["Player"], ["Any TD", "Games"])}
+        <tbody>${ps.map((p) => {
+          const pr = p.proj[g.id];
+          const last = p.log.slice(-3);
+          if (ROLES.outWeight(p) >= 1) return `<tr class="click" data-pid="${p.pid}"><td><span class="pname">${esc(p.name)}</span>${injBadge(p)}</td>${ROLES.outRow(keys.length + 2)}</tr>`;
+          return `<tr class="click" data-pid="${p.pid}"><td><span class="pname">${esc(p.name)}</span>${injBadge(p)}</td>
+            ${keys.map((k, i) => {
+              const d = pr[k];
+              if (!d) return `<td${gsCls(keys, i)}>–</td>`;
+              const season = p.log.reduce((a, r) => a + (r[k] || 0), 0) / p.log.length;
+              const l3 = last.reduce((a, r) => a + (r[k] || 0), 0) / last.length;
+              const rng = STATS[k].count ? `${pct(1 - poissonCdf(0, d.mean))} for 1+` : `${Math.round(quantile(0.1, d))}–${Math.round(quantile(0.9, d))}`;
+              return `<td${gsCls(keys, i)} title="${STATS[k].label}: season avg ${fmt(season, 1)} · last 3 avg ${fmt(l3, 1)}"><b>${fmt(d.mean, STATS[k].dec)}</b>${ROLES.mark(p, g.id, k, STATS[k].dec)}<span class="rng">${rng}</span></td>`;
+            }).join("")}
+            <td class="gs"><b>${pct(anyTd(tdLambda(p, g)))}</b></td><td>${p.log.length}</td></tr>`;
+        }).join("")}</tbody></table></div>`;
+    }).join("");
+    return `<div class="team-block"><h3><img src="${logo(tm)}" alt="">${esc(DATA.team_names[tm])} <span class="muted small">${record(tm)}</span></h3>
+      ${tables || `<div class="empty">No players with recent snaps found.</div>`}</div>`;
+  };
+  const shown = state.team === "BOTH" ? [g.away, g.home] : [state.team];
   el.innerHTML = `
     <div class="panel-head"><h2>Player projections this game</h2><span class="muted small">Bold = projected average (▲▼ = changed for a teammate who is out; hover for details). Small text = 80% range (or chance of 1+ TD). Tap a player for game logs and lines.</span></div>
     <div class="tabs">
-      ${[g.away, g.home].map((t) => `<button class="chip" data-team="${t}" aria-pressed="${t === state.team}">${esc(DATA.team_names[t])}</button>`).join("")}
+      ${["BOTH", g.away, g.home].map((t) => `<button class="chip" data-team="${t}" aria-pressed="${t === state.team}">${t === "BOTH" ? "Both teams" : esc(DATA.team_names[t])}</button>`).join("")}
       <span style="width:12px"></span>
       ${["ALL", ...POS_ORDER].map((p) => `<button class="chip" data-pos="${p}" aria-pressed="${p === state.pos}">${p === "ALL" ? "All" : p}</button>`).join("")}
     </div>
-    ${tables || `<div class="empty">No players with recent snaps found.</div>`}`;
+    <div class="team-cols">${shown.map(teamBlock).join("")}</div>`;
   el.querySelectorAll("[data-team]").forEach((b) => b.onclick = () => { state.team = b.dataset.team; renderPlayers(g); });
   el.querySelectorAll("[data-pos]").forEach((b) => b.onclick = () => { state.pos = b.dataset.pos; renderPlayers(g); });
   el.querySelectorAll("tr[data-pid]").forEach((tr) => tr.onclick = () => openPlayer(tr.dataset.pid, g));
@@ -1028,14 +1066,14 @@ function renderPlayerView(pid, g) {
       <div class="panel-head"><h3>Recent games</h3>
         <div class="tabs" style="margin:0">${[3, 5, 99].map((n) => `<button class="chip" data-n="${n}" aria-pressed="${n === pv.n}">${n === 99 ? "All" : `Last ${n}`}</button>`).join("")}</div></div>
       <div class="table-wrap"><table>
-        <thead><tr><th>Week</th>${keys.map((k) => `<th>${STATS[k].short}</th>`).join("")}</tr></thead>
+        ${statHead(keys, ["Week"])}
         <tbody>
-          ${recent.map((r) => `<tr><td>Wk ${r.w} ${esc(r.opp)}${r.tm !== p.team ? ` <span class="muted small">(${esc(r.tm)})</span>` : ""}</td>${keys.map((k) => `<td>${r[k]}</td>`).join("")}</tr>`).join("")}
-          <tr class="sum"><td>Avg, ${pv.n === 99 ? "all" : `last ${recent.length}`}</td>${keys.map((k) => `<td>${fmt(avg(recent.map((r) => r[k])), 1)}</td>`).join("")}</tr>
-          <tr class="sum"><td>Season avg</td>${keys.map((k) => `<td>${fmt(avg(p.log.map((r) => r[k])), 1)}</td>`).join("")}</tr>
-          <tr class="sum proj"><td>Projected vs ${opp}</td>${keys.map((k) => `<td><b>${fmt(pr[k].mean, STATS[k].count ? 2 : 1)}</b></td>`).join("")}</tr>
-          <tr class="sum"><td>Expected range (80%)</td>${keys.map((k) => `<td>${rangeCell(k)}</td>`).join("")}</tr>
-          <tr class="sum"><td>Consistency</td>${keys.map((k) => { const st = stability(p.log.map((r) => r[k])); return STATS[k].count ? `<td class="muted small">${p.log.filter((r) => r[k] > 0).length} of ${p.log.length}</td>` : `<td><span class="stab ${st.cls}">${st.label}</span></td>`; }).join("")}</tr>
+          ${recent.map((r) => `<tr><td>Wk ${r.w} ${esc(r.opp)}${r.tm !== p.team ? ` <span class="muted small">(${esc(r.tm)})</span>` : ""}</td>${keys.map((k, i) => `<td${gsCls(keys, i)}>${r[k] ?? 0}</td>`).join("")}</tr>`).join("")}
+          <tr class="sum"><td>Avg, ${pv.n === 99 ? "all" : `last ${recent.length}`}</td>${keys.map((k, i) => `<td${gsCls(keys, i)}>${fmt(avg(recent.map((r) => r[k] || 0)), 1)}</td>`).join("")}</tr>
+          <tr class="sum"><td>Season avg</td>${keys.map((k, i) => `<td${gsCls(keys, i)}>${fmt(avg(p.log.map((r) => r[k] || 0)), 1)}</td>`).join("")}</tr>
+          <tr class="sum proj"><td>Projected vs ${opp}</td>${keys.map((k, i) => `<td${gsCls(keys, i)}><b>${pr[k] ? fmt(pr[k].mean, STATS[k].count ? 2 : 1) : "–"}</b></td>`).join("")}</tr>
+          <tr class="sum"><td>Expected range (80%)</td>${keys.map((k, i) => `<td${gsCls(keys, i)}>${pr[k] ? rangeCell(k) : "–"}</td>`).join("")}</tr>
+          <tr class="sum"><td>Consistency</td>${keys.map((k, i) => { const st = stability(p.log.map((r) => r[k] || 0)); return STATS[k].count ? `<td class="muted small${groupStart(keys, i) ? " gs" : ""}">${p.log.filter((r) => r[k] > 0).length} of ${p.log.length}</td>` : `<td${gsCls(keys, i)}><span class="stab ${st.cls}">${st.label}</span></td>`; }).join("")}</tr>
         </tbody>
       </table></div>
     </div>

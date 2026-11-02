@@ -226,6 +226,38 @@ def prior_rates(stats, upto_week):
     return out
 
 
+def team_records(sched):
+    """Win-loss record for every team from finished regular-season games (ties count as T).
+
+    {team: {"w", "l", "t", "home": [w, l, t], "away": [w, l, t], "div": [w, l, t], "streak": "W3", "last5": "WLWWL"}}
+    """
+    out = {ab: {"w": 0, "l": 0, "t": 0, "home": [0, 0, 0], "away": [0, 0, 0], "div": [0, 0, 0], "res": []}
+           for ab in TEAM_NAMES}
+    played = sched[sched.home_score.notna() & sched.away_score.notna()].sort_values(["week", "gameday"])
+    for r in played.itertuples():
+        div = bool(getattr(r, "div_game", 0) == 1)
+        for tm, mine, theirs, where in ((r.home_team, r.home_score, r.away_score, "home"),
+                                        (r.away_team, r.away_score, r.home_score, "away")):
+            if tm not in out:
+                continue
+            res = "W" if mine > theirs else "L" if mine < theirs else "T"
+            i = "WLT".index(res)
+            rec = out[tm]
+            rec["wlt"[i]] += 1
+            rec[where][i] += 1
+            if div:
+                rec["div"][i] += 1
+            rec["res"].append(res)
+    for rec in out.values():
+        res = rec.pop("res")
+        n = 0
+        while n < len(res) and res[-1 - n] == res[-1]:
+            n += 1
+        rec["streak"] = f"{res[-1]}{n}" if res else ""
+        rec["last5"] = "".join(res[-5:])
+    return out
+
+
 # ---------------------------------------------------------------- projection
 
 def game_script(team, opp, teams, lg, team_margin, implied_pts):
@@ -448,6 +480,9 @@ def build(season):
     week = current_week(sched)
     weeks = [w for w in (week, week + 1) if w in set(sched.week)]
     teams, lg = team_context(stats, team_stats, sched, week)
+    for ab, rec in team_records(sched).items():
+        if ab in teams:
+            teams[ab]["record"] = rec
     cvs = prior_cvs(stats, week)
     rates = prior_rates(stats, week)
     prev = prev_summary(load_prev(season))
