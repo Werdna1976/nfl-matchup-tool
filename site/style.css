@@ -325,3 +325,23 @@ details.how > div { margin-top: 6px; padding: 8px 10px; background: var(--panel-
 .ap-h { font-size: 17px; }
 details.ap-games > div { background: none; padding: 0; }
 .ap-games .ap-chips { margin: 4px 0 0; }
+
+/* ---- NFL page: full width, team records, grouped stat lines ---- */
+main.wide { max-width: 2400px; }
+.gcard .recs { font-size: 11.5px; color: var(--muted); margin-top: 1px; }
+.scoreline .rec { color: var(--text); }
+.team-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 720px), 1fr)); gap: 10px 22px; }
+.team-block { min-width: 0; }
+.team-block h3 { display: flex; align-items: center; gap: 8px; margin: 4px 0 2px; }
+.team-block h3 img { width: 26px; height: 26px; object-fit: contain; }
+.team-block h4 { margin: 10px 0 2px; font-size: 13px; color: var(--muted); letter-spacing: .04em; }
+table.statline td, table.statline th { padding-left: 6px; padding-right: 6px; }
+th.gs, td.gs { border-left: 1px solid var(--line); }
+tr.grp th { text-align: center; color: var(--text); border-bottom: none; padding-bottom: 0; }
+tr.grp th[rowspan] { vertical-align: bottom; text-align: right; color: var(--muted); border-bottom: 1px solid var(--line); }
+tr.grp th[rowspan]:first-child { text-align: left; }
+.wide2 { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0 14px; align-items: start; }
+@media (min-width: 1500px) { .wide2 { grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); } }
+@media (min-width: 1500px) { .modal-card { max-width: 1640px; } }
+.rec-short { display: none; }
+@media (max-width: 700px) { .rec-more { display: none; } .rec-short { display: inline; } }
