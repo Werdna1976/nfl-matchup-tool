@@ -28,9 +28,15 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt
       - name: Build data
+        run: python scripts/build_data.py
+      - name: Backtest
+        # The backtest only feeds the calibration curves. If it breaks, keep the published curves
+        # so fresh lines and stats still go out, and flag the run with a warning.
         run: |
-          python scripts/build_data.py
-          python scripts/backtest.py "$(python -c 'import datetime as d; t=d.date.today(); print(t.year if t.month >= 8 else t.year - 1)')"
+          python scripts/backtest.py "$(python -c 'import datetime as d; t=d.date.today(); print(t.year if t.month >= 8 else t.year - 1)')" || {
+            echo "::warning::Backtest failed; reusing the published backtest.json"
+            curl -sfL -o site/data/backtest.json "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/data/backtest.json" || true
+          }
       - name: Build NBA data
         # If the NBA download fails, keep the NBA numbers already on the live site so the NFL page still publishes.
         run: |

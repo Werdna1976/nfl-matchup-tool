@@ -334,7 +334,8 @@ def _blend(n, ew, prev, k_prev, k0, target):
     """Recent form, pulled toward last season (if he played 4+ games) and a baseline."""
     pn, pm = prev if prev else (0, 0.0)
     kp = abs(k_prev) * min(pn, 17) / 17 if pn >= 4 else 0.0
-    return (n * ew + kp * pm + abs(k0) * target) / (n + kp + abs(k0))
+    den = n + kp + abs(k0)
+    return (n * ew + kp * pm + abs(k0) * target) / den if den > 0 else target
 
 
 def project_player(games, pos, opp, teams, lg, gs, cvs, rates, calib=None, prev=None):
@@ -369,8 +370,9 @@ def project_player(games, pos, opp, teams, lg, gs, cvs, rates, calib=None, prev=
         curve = abs(P["a"]) * mean ** (-P["p"])
         m = sum(vals) / n if n else 0.0
         own = ((sum((v - m) ** 2 for v in vals) / (n - 1)) ** 0.5 / m) if n > 1 and m > 0 else curve
-        w = max(n - 1, 0)
-        cv = math.sqrt((w * own ** 2 + abs(P["k_own"]) * curve ** 2) / (w + abs(P["k_own"])))
+        w, k = max(n - 1, 0), abs(P["k_own"])
+        # a fitted k_own of 0 means "trust his own spread"; with one game there is none, so use the curve
+        cv = math.sqrt((w * own ** 2 + k * curve ** 2) / (w + k)) if w + k > 0 else curve
         cv = clip(cv * (calib or {}).get(col, 1.0), 0.12, 2.0)
         out[col] = {"mean": round(mean, 2), "sd": round(max(cv * mean, 0.5), 2), "dist": "gmix",
                     "w": round(P["w"], 3), "r": round(P["r"], 3), "k": round(P["k"], 3), "f": round(f, 3)}
