@@ -234,7 +234,7 @@ async function refreshLines(manual) {
   const fileTime = new Date(DATA.updated).getTime();
   let saved = {};
   try { saved = JSON.parse(localStorage.getItem(LINES_KEY) || "{}"); } catch (e) { saved = {}; }
-  let live = 0, ok = false, scores = {};
+  let live = 0, ok = false, reached = false, scores = {};
   try {
     for (const w of DATA.weeks) {
       const { lines, scores: sc } = await fetchEspnLines(w);
@@ -242,7 +242,7 @@ async function refreshLines(manual) {
       const now = Date.now();
       for (const [key, l] of Object.entries(lines)) { saved[key] = { ...l, t: now }; live++; }
     }
-    ok = live > 0;
+    ok = live > 0; reached = true;
     try { localStorage.setItem(LINES_KEY, JSON.stringify(saved)); } catch (e) { /* private mode */ }
   } catch (e) { ok = false; }
   for (const g of DATA.games) {
@@ -252,6 +252,8 @@ async function refreshLines(manual) {
   }
   LINE_STATUS = ok
     ? `Lines live from ESPN as of ${new Date().toLocaleTimeString()}`
+    : reached
+    ? `ESPN answered but has no lines posted yet for these games (checked ${new Date().toLocaleTimeString()}); showing the lines in the data file`
     : `Live lines blocked here, showing saved lines from ${new Date(Math.max(fileTime, ...Object.values(saved).map((l) => l.t || 0))).toLocaleString()}`;
   if (btn) { btn.disabled = false; btn.textContent = "Refresh"; }
   await refreshInjuries();
@@ -285,9 +287,14 @@ async function reloadAll() {
 }
 
 // short in the header, the whole story on hover
-const lineShort = () => (/^Lines live/.test(LINE_STATUS) ? "live lines" : /blocked/.test(LINE_STATUS) ? "saved lines (ESPN blocked here)" : "checking lines…");
+const lineShort = () => (/^Lines live/.test(LINE_STATUS) ? "live lines" : /blocked/.test(LINE_STATUS) ? "saved lines (ESPN blocked here)" : /no lines posted/.test(LINE_STATUS) ? "no live lines posted yet" : "checking lines…");
+// say so in the header when the scheduled rebuild has stopped publishing
+const staleNote = () => {
+  const h = (Date.now() - new Date(DATA.updated).getTime()) / 36e5;
+  return h >= 12 ? ` · data file is ${Math.round(h)} hours old` : "";
+};
 function renderMeta() {
-  $("#meta").textContent = `${DATA.season} · stats through week ${DATA.stats_through} · ${lineShort()}`;
+  $("#meta").textContent = `${DATA.season} · stats through week ${DATA.stats_through} · ${lineShort()}` + staleNote();
   $("#meta").title = `Data file ${new Date(DATA.updated).toLocaleString()} · ${LINE_STATUS}${NEWS_STATUS}`;
 }
 
