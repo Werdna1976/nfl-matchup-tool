@@ -1,50 +1,37 @@
 "use strict";
 
-// Storyline baskets, shared by the NFL and NBA pages.
+// Polymarket bets for one game, shared by the NFL and NBA pages.
 //
 // 1. Pull Polymarket's prop and game markets for a game, but only when they are worth reading:
 //    on game day for the NBA, from the day before for the NFL. Prices are the real order book:
 //    a leg costs what you'd pay to buy it now (the ask), not the midpoint.
 // 2. Simulate the game a few thousand times so legs that move together really do move
-//    together: a slow, low-scoring night drags every scorer down at once, a blowout sends
-//    starters to the bench early, and a QB's yards and his top receiver's yards rise together.
-// 3. For each storyline (a defense shuts a team down, a scorer and a playmaker both go off,
-//    a shootout, and so on), pick up to 10 legs with the best expected return whose combined
-//    payout is more than 4x net, and show what the model thinks of the price.
-// 4. Underpriced single bets and lottery tickets come from the same priced legs; locks.js
-//    reuses the legs and the simulation to build the cross-game Lock combos.
+//    together, with weights fitted to past seasons (see simulate()).
+// 3. Show the mispriced single bets (the model's fair price beats Polymarket's), the pairs that
+//    pull apart or move together (pairs.js), and lottery tickets. locks.js reuses the legs, the
+//    simulation, and the storylines below to build the cross-game Lock combos.
 //
 // Each page passes an adapter with its sport's rules (see basketAdapter in app.js and nba.js).
 
 const BASKETS = (() => {
   const GAMMA = "https://gamma-api.polymarket.com";
   const CLOB = "https://clob.polymarket.com";
-  const MIN_NET = 4;                 // only baskets that pay more than 4x profit (5x back per $1)
   const N = 6000;                    // simulated games per matchup
   const WIDE = 0.05;                 // bid-ask gap (in dollars per share) that counts as wide
-  // Andrew bets $10-20 a basket, so every leg must take $20 without paying more than 2¢ over
+  // Andrew bets $10-20 a time, so every leg must take $20 without paying more than 2¢ over
   // the best ask; anything thinner is left out, not just flagged. Without the order book, a
   // market needs $1,000 of liquidity to count.
   const STAKE = 20, MAX_SLIP = 0.02, MIN_LIQ = 1000;
   // A real, tradeable price: bid and ask no more than 10¢ apart, within 5¢ of the price Polymarket
-  // shows on its site, and under 95¢ (dearer legs add almost nothing to a basket's payout).
+  // shows on its site, and under 95¢ (dearer legs add almost nothing to a parlay's payout).
   // Empty markets sit at a 1¢ bid and a 97-99¢ ask, which are placeholders, not prices.
   const MAX_GAP = 0.1, MAX_OFF_SHOWN = 0.05, MAX_PRICE = 0.95;
   const REPRICE_MS = 2 * 60 * 1000;   // re-pull prices every 2 minutes while the page is open
   const CACHE_MS = 90 * 1000;        // reuse a pull for 90 seconds while clicking around
-  const SHOWN = 6;                   // baskets per game: both "runs away" stories plus the best four others
-  const MIN_LEG_P = 0.4, MIN_PRICE = 0.3;   // no longshot legs: the model and the market both give it a real chance
-  // A storyline must be at least a 1-in-5 scenario in the simulation (the two "runs away" ones always
-  // show, flagged when they fall short). The basket built on it can be a long one, down to 1 in 40,
-  // as long as the price pays more than the model's odds say it should.
-  const MIN_THEME = 0.2, MIN_BASKET = 0.025;
-  // Without prices there's no edge to find, so model-only baskets aim for a bigger payout (10x or
-  // more at their own odds) and pick the one that hits most often when the storyline happens.
-  const MODEL_PAY = 10;
-  const MAX_LEGS = 10, BEAM = 60;
-  // How strongly legs move together is the simulation's estimate, not tested on past games, so a
-  // basket's chance counts only half of the boost over "unrelated" (same rule as the locks)
-  const LIFT_TRUST = 0.5;
+  const MIN_LEG_P = 0.4;             // model-only legs: no long shots
+  // A storyline (used by the locks) must be at least a 1-in-5 scenario in the simulation
+  const MIN_THEME = 0.2;
+  const MAX_LEGS = 10;
   const LOTTO_MIN = 0.04, LOTTO_MAX = 0.3, LOTTO_SHOWN = 10;   // lottery-ticket legs: 4-30¢
   const SAVE_KEY = "pmBasketQuotes", SAVE_MAX_MS = 15 * 60 * 1000;   // prices move fast: an older saved copy is useless
 
@@ -401,7 +388,7 @@ const BASKETS = (() => {
     const p = side === "over" ? pr.over : pr.under;
     const who = `${pl.name} [${pl.team}]`;
     return {
-      kind, pid, key, line, side, p, team: pl.team, core: pl.core, story: A.storyKeys(pl).includes(key), tags: A.tags(pl, key), name: pl.name, q: pl.q,
+      kind, pid, key, line, side, p, gid: g.id, team: pl.team, core: pl.core, story: A.storyKeys(pl).includes(key), tags: A.tags(pl, key), name: pl.name, q: pl.q,
       // the player's team in brackets, like "Desmond Bane [ORL] 4+ 3-pointers made"
       label: key === "anytd" && line < 1 ? (side === "over" ? `${who} anytime TD` : `${who} no touchdown`) : `${who} ${lineTxt(side, line)} ${A.statLabel(key)}`,
     };
@@ -420,26 +407,48 @@ const BASKETS = (() => {
   }
 
   // Each simulated game draws a total and a margin (the same ones the page's total and spread
-  // tools use). A team's scoring follows from those. Every player's stat line then depends on:
-  // his team's scoring (b), whether his team is ahead (m: lead backs run more when ahead, QBs
-  // throw more when behind), a team passing-game swing shared by its QB and receivers (pass),
-  // and how lopsided the game is (w: NBA starters sit in blowouts). The rest is his own luck.
-  // Each leg's own chance is kept exactly as the model has it; only how legs move together
-  // comes from here.
+  // tools use). A team's scoring follows from those. Every player's stat line then depends on a
+  // few shared swings, with weights fitted to past seasons (A.load, see PM_LOAD in app.js and
+  // nba.js): his team's scoring (b), his team's lead (m), his team's passing volume (pass), how
+  // lopsided the game is (w: NBA starters sit in blowouts), how much of the game his team has
+  // the ball (poss: the other team's share is the mirror image), a passing-friendly game for
+  // both sides (env), touchdowns coming through the air vs. on the ground (tds), and a share of a
+  // pool he splits with teammates (comp: backs split carries, receivers split targets, NBA
+  // regulars split shots), which is what makes some teammates' props pull apart.
+  // The rest is his own luck. Each leg's own chance is kept exactly as the model has it; only
+  // how legs move together comes from here.
   function simulate(A, g, legs) {
     const r = rng(g.id), norm = () => Math.sqrt(-2 * Math.log(r() + 1e-12)) * Math.cos(2 * Math.PI * r());
+    const vec = () => { const v = new Float64Array(N); for (let i = 0; i < N; i++) v[i] = norm(); return v; };
     const m = g.model, sT = m.total.sd, sM = m.margin.sd, S = Math.hypot(sT, sM);
     const T = new Float64Array(N), M = new Float64Array(N), zH = new Float64Array(N), zA = new Float64Array(N);
-    const zM = new Float64Array(N), blow = new Float64Array(N), passH = new Float64Array(N), passA = new Float64Array(N);
+    const zM = new Float64Array(N), blow = new Float64Array(N);
+    const passH = vec(), passA = vec(), tdsH = vec(), tdsA = vec(), poss = vec(), env = vec();
     for (let i = 0; i < N; i++) {
       const a = norm(), b = norm();
       T[i] = m.total.mean + sT * a; M[i] = m.margin.mean + sM * b; zM[i] = b;
       zH[i] = (sT * a + sM * b) / S; zA[i] = (sT * a - sM * b) / S;
       blow[i] = (Math.abs(M[i]) - 0.8 * sM) / (0.6 * sM);
-      passH[i] = norm(); passA[i] = norm();
     }
+    // pools: each member gets his own draw minus the pool's average, so members pull apart
+    // (two members: -c1*c2; n members: about -c1*c2/(n-1)) while the pool as a whole doesn't move
+    const pools = new Map();
+    const poolZ = (pl, name) => {
+      const key = `${pl.team}|${name}`;
+      if (!pools.has(key)) {
+        const mem = A.roster(g).filter((x) => x.team === pl.team && !x.skip && (A.pools?.(x) || []).includes(name));
+        const z = new Map(mem.map((x) => [x.pid, vec()]));
+        const n = mem.length, f = n > 1 ? Math.sqrt(n / (n - 1)) : 0;
+        if (n > 1) for (let i = 0; i < N; i++) {
+          let avg = 0; for (const v of z.values()) avg += v[i];
+          avg /= n; for (const v of z.values()) v[i] = (v[i] - avg) * f;
+        }
+        pools.set(key, z);
+      }
+      return pools.get(key).get(pl.pid) || null;
+    };
     const own = new Map(), latent = new Map();
-    const playerZ = (pid) => { if (!own.has(pid)) { const z = new Float64Array(N); for (let i = 0; i < N; i++) z[i] = norm(); own.set(pid, z); } return own.get(pid); };
+    const playerZ = (pid) => { if (!own.has(pid)) own.set(pid, vec()); return own.get(pid); };
     for (const leg of legs) {
       const hit = new Uint8Array(N);
       if (leg.kind === "total") for (let i = 0; i < N; i++) hit[i] = leg.side === "over" ? T[i] > leg.line : T[i] < leg.line;
@@ -447,12 +456,18 @@ const BASKETS = (() => {
       else {
         const id = `${leg.pid}|${leg.key}`;
         if (!latent.has(id)) {
-          const home = leg.team === g.home, L = A.load(A.player(leg.pid), leg.key);
-          const rest = Math.sqrt(Math.max(0.05, 1 - L.b ** 2 - L.m ** 2 - L.pass ** 2 - L.w ** 2));
-          const zp = playerZ(leg.pid), x = new Float64Array(N);
+          const pl = A.player(leg.pid), home = leg.team === g.home, L = A.load(pl, leg.key) || {};
+          const f = (k) => L[k] || 0;
+          const comps = Object.entries(L.comp || {}).map(([name, c]) => [poolZ(pl, name), c]).filter(([z]) => z);
+          const shared = f("b") ** 2 + f("m") ** 2 + f("pass") ** 2 + f("w") ** 2 + f("poss") ** 2 + f("env") ** 2 + f("tds") ** 2 + comps.reduce((a, [, c]) => a + c * c, 0);
+          const rest = Math.sqrt(Math.max(0.05, 1 - shared));
+          const zp = playerZ(leg.pid), x = new Float64Array(N), sg = home ? 1 : -1;
+          const zT = home ? zH : zA, pass = home ? passH : passA, tds = home ? tdsH : tdsA;
           for (let i = 0; i < N; i++) {
-            x[i] = L.b * (home ? zH[i] : zA[i]) + L.m * (home ? zM[i] : -zM[i]) + L.pass * (home ? passH[i] : passA[i])
-              + L.w * blow[i] + rest * (0.55 * zp[i] + 0.835 * norm());
+            let v = f("b") * zT[i] + f("m") * sg * zM[i] + f("pass") * pass[i] + f("w") * blow[i] + f("poss") * sg * poss[i] + f("env") * env[i] + f("tds") * tds[i]
+              + rest * (0.55 * zp[i] + 0.835 * norm());
+            for (const [z, c] of comps) v += c * z[i];
+            x[i] = v;
           }
           latent.set(id, { x, sorted: Float64Array.from(x).sort() });
         }
@@ -549,74 +564,6 @@ const BASKETS = (() => {
     return out;
   }
 
-  // Best basket of up to 10 legs for a story: one leg per player, one bet on who wins, one total, at
-  // least one game leg, no longshot legs, a payout above 4x net, and a chance of at least 1 in 40.
-  // With prices it maximizes the expected return; without them, it pays 10x+ at its own odds and
-  // hits as often as possible when the storyline happens. `loose` widens the leg limits a little.
-  function best(story, legs, priced, loose) {
-    const legMin = loose ? MIN_LEG_P - 0.05 : MIN_LEG_P, priceMin = loose ? MIN_PRICE - 0.05 : MIN_PRICE;
-    // the storyline itself has to be plausible (checked before this); the basket can be a long one
-    const jointMin = MIN_BASKET;
-    const ok = legs.filter((l) => {
-      // story legs use stats the player is known for (a playmaker's assists, not a center's)
-      if (l.lotto || !story.pool(l) || (l.kind === "player" && !l.story && !story.priced)) return false;
-      const f = story.floor?.(l, loose);
-      return f != null ? l.p >= f && (!priced || l.price >= f - 0.05) : l.p >= legMin && (!priced || l.price >= priceMin);
-    });
-    // with prices, legs are ranked by the edge left after adjusting (the raw edge if there's no adjusted chance)
-    const adjEdge = (l) => (l.pa != null ? l.pa - l.price : l.edge);
-    const rank = (a, b) => (priced ? adjEdge(b) - adjEdge(a) : b.p - a.p);
-    // the best few legs for each thing the story needs, then the best of the rest
-    // at most two lines per player, so the pool covers enough different players to reach 10 legs
-    const per = new Map(), sorted = ok.sort(rank).filter((l) => { const n = per.get(l.grp) || 0; per.set(l.grp, n + 1); return isGame(l) || n < 2; });
-    const pick = [...new Set([...story.need.flatMap(([f]) => sorted.filter(f).slice(0, 4)), ...sorted.filter(isGame).slice(0, 4), ...sorted.filter((l) => !isGame(l)).slice(0, 28)])];
-    // game legs go first: every basket starts from one, so the search can't prune them away
-    const pool = [...pick.filter(isGame), ...pick.filter((l) => !isGame(l))];
-    const needsMet = (legs2) => story.need.filter(([f, n]) => legs2.filter(f).length >= n).length;
-    // Build baskets one leg at a time (up to 10), keeping the 60 most promising at each size.
-    // A basket's chance only falls as legs are added, so anything under the floor is dropped early.
-    const okNeed = (pick) => pick.some(isGame) && story.need.every(([f, n]) => pick.filter(f).length >= n);
-    const idx = new Map(pool.map((l, i) => [l, i])), tN = story.tbits ? Math.max(1, popcount(story.tbits)) : 1;
-    // adj = how much the adjusted chances shrink (or grow) the model's: the basket's chance is the
-    // simulated one times that, so legs still move together but their own odds are the careful ones
-    const ratio = (l) => (priced && l.pa != null ? l.pa / l.p : 1);
-    let top = null, beam = pool.filter(isGame).map((l) => ({ legs: [l], bits: l.bits, prod: l.p, cost: priced ? l.price : 1, adj: ratio(l) }));
-    for (let depth = 1; depth < Math.min(story.max, MAX_LEGS) && beam.length; depth++) {
-      const next = [];
-      for (const c of beam) {
-        const last = c.legs.length ? idx.get(c.legs.at(-1)) : -1;
-        for (let i = last + 1; i < pool.length; i++) {
-          const l = pool[i];
-          if (c.legs.some((p) => p.grp === l.grp)) continue;
-          const bits = c.bits ? and(c.bits, l.bits) : l.bits, pj = popcount(bits) / N;
-          if (pj < jointMin) continue;
-          const legs2 = [...c.legs, l], prod = c.prod * l.p, cost = c.cost * (priced ? l.price : 1), adj = c.adj * ratio(l);
-          const pay = priced ? 1 / cost : 1 / pj;
-          // without prices there's no edge to chase, so pick the basket that hits most often when the
-          // storyline happens: a bet on the story itself rather than on unrelated legs
-          const fit = story.tbits ? popcount(and(bits, story.tbits)) / tN : pj / prod;
-          if (legs2.length >= 2 && pay - 1 > MIN_NET && (priced || pay >= MODEL_PAY) && okNeed(legs2)) {
-            // the careful chance: adjusted leg odds, and only half of the simulated boost from legs moving together
-            const pAdj = adj * (prod + LIFT_TRUST * (pj - prod));
-            const score = priced ? pAdj * pay - 1 : fit;
-            if (!top || score > top.score) top = { legs: legs2, bits, pj, prod, pay, score, ev: priced ? pAdj * pay - 1 : null, pAdj };
-          }
-          // how promising: expected payout per $1 with prices, correlation lift without
-          // and a nudge toward baskets that already have what the story needs
-          next.push({ legs: legs2, bits, prod, cost, adj, rank: (priced ? adj * (prod + LIFT_TRUST * (pj - prod)) / cost : fit) * 1.5 ** needsMet(legs2) });
-        }
-      }
-      // keep the most promising, plus a few of the longest ones so bigger baskets still get looked at
-      next.sort((x, y) => y.rank - x.rank);
-      const low = next.slice(BEAM * 0.7).sort((x, y) => x.prod - y.prod).slice(0, BEAM * 0.3);
-      beam = [...next.slice(0, BEAM * 0.7), ...low];
-    }
-    if (!top) return null;
-    // how often the basket hits when the storyline does happen
-    const given = story.tbits ? popcount(and(top.bits, story.tbits)) / Math.max(1, popcount(story.tbits)) : null;
-    return { ...story, ...top, given };
-  }
-
   // each storyline's own chance, measured on the same simulated games as the legs
   function themed(all, sim) {
     return all.map((st) => {
@@ -628,33 +575,13 @@ const BASKETS = (() => {
     });
   }
 
-  // Up to six per game. A storyline has to happen in at least 1 simulated game in 5, the "runs away"
-  // ones included (they used to show even when they fell short, which broke the 1-in-5 rule for big
-  // underdogs). They still go first when they qualify. A basket that mostly repeats one already
-  // shown is skipped; if that leaves the game short, try again with slightly looser limits.
-  function pickSix(A, g, legs, priced) {
-    const all = themed(stories(A, g).filter((s) => priced || !s.priced), legs.sim).filter((s) => s.pt == null || s.pt >= MIN_THEME);
-    const shown = [];
-    // with up to 10 legs some overlap is natural, so "repeats" means sharing half or more of the smaller basket
-    const repeats = (b) => shown.some((o) => b.legs.filter((l) => o.legs.includes(l)).length >= Math.max(Math.min(3, b.legs.length), Math.ceil(Math.min(b.legs.length, o.legs.length) / 2)));
-    for (const loose of [false, true]) {
-      const got = all.filter((s) => !shown.some((b) => b.id === s.id)).map((s) => best(s, legs, priced, loose)).filter(Boolean);
-      for (const b of got.sort((x, y) => (y.base === true) - (x.base === true) || y.score - x.score)) {
-        if (shown.length >= SHOWN) break;
-        if (!repeats(b)) shown.push(b);
-      }
-      if (shown.length >= SHOWN) break;
-    }
-    return shown;
-  }
-
   // ---------------------------------------------------------------- panel
 
   async function render(el, g, A) {
     const token = (el._basketToken = {});
     const win = pullWindow(A, g);
     // on a re-pull for the same game, keep showing the last prices until the new ones arrive
-    if (el.dataset.gid !== g.id) el.innerHTML = head(win.open ? "Checking Polymarket…" : esc(win.why)) + `<div class="empty">${win.open ? "Pulling Polymarket prices for this game…" : "Building model-only baskets…"}</div>`;
+    if (el.dataset.gid !== g.id) el.innerHTML = head(win.open ? "Checking Polymarket…" : esc(win.why)) + `<div class="empty">${win.open ? "Pulling Polymarket prices for this game…" : "Working out the model-only pairs…"}</div>`;
     el.dataset.gid = g.id;
     let rec = null;
     if (win.open) rec = await pull(A, g);
@@ -663,7 +590,7 @@ const BASKETS = (() => {
     const priced = !!(rec && rec.markets.some((m) => m.kind === "player"));
     let legs = priced ? legsFromMarkets(A, g, rec.markets) : legsFromModel(A, g);
     let status;
-    if (!win.open) status = `${esc(win.why)} Until then these use the model's own lines, so compare each basket's break-even payout with Polymarket's price.`;
+    if (!win.open) status = `${esc(win.why)} Until then the pairs use the model's own lines, so compare each pair's break-even payout with Polymarket's price.`;
     else if (rec.src === "blocked") status = "Couldn't reach Polymarket from this computer (it may be blocked on this network). These use the model's own lines instead.";
     else if (!priced) status = `Polymarket isn't listing player props for this game yet${rec.events ? ` (found ${rec.events} event${rec.events > 1 ? "s" : ""}, but no player markets)` : ""}, checked ${new Date(rec.t).toLocaleTimeString()}. These use the model's own lines instead.`;
     else status = `${rec.src === "saved" ? `<b>Saved</b> Polymarket prices from ${new Date(rec.t).toLocaleTimeString()} (couldn't refresh, prices may have moved)` : `Polymarket prices as of <b>${new Date(rec.t).toLocaleTimeString()}</b> (updates every 2 minutes)`} · ${rec.markets.filter((m) => m.kind === "player").length} player markets${rec.book ? " · checked against the order book" : " · summary quotes (order book unavailable)"} · hover a leg to see the exact market`;
@@ -674,9 +601,10 @@ const BASKETS = (() => {
     // each leg's adjusted chance (vet.js): a basket's expected return is judged on that, not the raw model
     if (priced) for (const l of legs) l.pa = VET.adjusted(l, { A, g });
     simulate(A, g, legs);
-    const baskets = pickSix(A, g, legs, priced);
-    // single bets first (the steadiest edge), then the storyline parlays, then the long shots
-    el.innerHTML = head(status, win.open) + underpricedHtml(under, priced) + basketsHtml(baskets, priced) + lotteryHtml(lottery(legs, priced), priced);
+    // single bets first (the steadiest edge), then pairs that pull apart or move together, then
+    // the long shots. The storyline baskets were retired (Andrew, 2026-11-04: "the scenarios
+    // aren't working well"); stories() stays because the locks use it to keep same-game legs consistent.
+    el.innerHTML = head(status, win.open) + underpricedHtml(under, priced) + PAIRS.html(legs, priced) + lotteryHtml(lottery(legs, priced), priced);
     el.querySelectorAll("[data-lotto-g]").forEach((btn) => (btn.onclick = () => {
       el.querySelectorAll(`.lotto [data-g="${btn.dataset.lottoG}"]`).forEach((c) => c.classList.toggle("off"));
     }));
@@ -767,13 +695,13 @@ const BASKETS = (() => {
   // One row of the underpriced table (also used by the Best props page, with a Game column)
   function underRow(l, i, game = "") {
     return `<tr class="${l.vet ? `vet-row-${l.vet.level}` : ""}"><td class="muted">${i + 1}</td>
-      <td class="lt-leg">${l.url ? `<a href="${esc(l.url)}" target="_blank" rel="noopener" title="${esc(l.src || "")}">${esc(l.label)}</a>` : esc(l.label)}${l.q || l.flags.length ? `<div class="tags">${[l.q, ...l.flags].filter(Boolean).map((f) => `<span class="badge q">${esc(f)}</span>`).join(" ")}</div>` : ""}${l.range ? `<div class="muted small">${esc(l.range)}</div>` : ""}${VET.why(l)}</td>${game}
-      <td><b>${pct(l.p)}</b></td><td>${cents(l.price)}${l.bid != null ? `<div class="muted small">bid ${cents(l.bid)}</div>` : ""}</td>
+      <td class="lt-leg">${TREND.link(l)}${l.q || l.flags.length ? `<div class="tags">${[l.q, ...l.flags].filter(Boolean).map((f) => `<span class="badge q">${esc(f)}</span>`).join(" ")}</div>` : ""}${l.range ? `<div class="muted small">${esc(l.range)}</div>` : ""}${VET.why(l)}</td>${game}
+      <td><b>${cents(l.p)}</b><div class="muted small">pays ${xs(1 / l.p)}</div></td><td>${cents(l.price)}<div class="muted small">pays ${xs(1 / l.price)}${l.bid != null ? ` · bid ${cents(l.bid)}` : ""}</div></td>
       <td class="edge-good">+${Math.round(l.edge * 100)}<div class="muted small">+${Math.round((l.p / l.price - 1) * 100)}%</div></td>${VET.cell(l)}</tr>`;
   }
   function underTable(rows, gameCol = null) {
     return `<div class="table-wrap"><table class="lotto-t under-t${gameCol ? " ap-t" : ""}">
-      <thead><tr><th>#</th><th class="lt-leg">Bet</th>${gameCol ? `<th class="ap-game">Game</th>` : ""}<th>Model</th><th>Price</th><th title="Model chance minus price, in cents; below it, the expected profit per $1 if the model is right">Edge</th><th title="Pressure test: Verified, Caution or Skip, and the edge left after the checks">Check</th></tr></thead>
+      <thead><tr><th>#</th><th class="lt-leg">Bet</th>${gameCol ? `<th class="ap-game">Game</th>` : ""}<th title="The model's chance, as the price it would be fair to pay, and the payout (total back per $1) that price means">Fair price</th><th title="What $20 costs per share on Polymarket now, and what it pays back per $1">Polymarket</th><th title="Fair price minus Polymarket's, in cents; below it, the expected profit per $1 if the model is right">Edge</th><th title="Pressure test: Verified, Caution or Skip, and the edge left after the checks">Check</th></tr></thead>
       <tbody>${rows.map((l, i) => underRow(l, i, gameCol ? gameCol(l) : "")).join("")}</tbody></table></div>`;
   }
   // checked rows: the ones that pass first (by the edge left after checks), the Skips folded away below
@@ -784,9 +712,9 @@ const BASKETS = (() => {
   }
 
   function underpricedHtml(list, priced) {
-    const box = (body) => `<div class="lotto first"><h3>Underpriced props</h3>${body}</div>`;
-    if (!priced) return box(`<div class="empty">Single bets priced below the model's chance show here once Polymarket posts player props for this game (game day for the NBA, the day before for the NFL, or within 24 hours of the start).</div>`);
-    return box(`<div class="muted small">Single bets, no parlay needed, where Polymarket's price is at least ${Math.round(UNDER_MIN_EDGE * 100)}¢ below the model's chance. Trust the <b>Check</b> column over the raw edge.</div>
+    const box = (body) => `<div class="lotto first"><h3>Mispriced props</h3>${body}</div>`;
+    if (!priced) return box(`<div class="empty">Single bets where the model's fair price beats Polymarket's show here once Polymarket posts player props for this game (game day for the NBA, the day before for the NFL, or within 24 hours of the start).</div>`);
+    return box(`<div class="muted small">Single bets where the model's fair price is at least ${Math.round(UNDER_MIN_EDGE * 100)}¢ above Polymarket's, so Polymarket pays more than the bet is worth. Trust the <b>Check</b> column over the raw edge. Click a player's bet to see his last 10 games.</div>
       ${how(`Each line ladder (a spread, a total, one player's stat) is one row: its best-priced line, with the range of lines that are also cheap. Every row can take a $${STAKE} bet near the price shown. The list is mixed: one row per player, per side of the game result, and per total, and at most two of any one kind of bet. Long shots under ${Math.round(LOTTO_MAX * 100)}¢ are in Lottery tickets below.<br><br>${VET.RULES}`)}
       ${list.length ? underLists(list) : `<div class="empty">Nothing underpriced right now.</div>`}`);
   }
@@ -799,7 +727,7 @@ const BASKETS = (() => {
     const L = "ABCDEFG";
     const gh = groups.map((gr, j) => `<th class="lg" data-g="${j}"><button type="button" class="lg-btn" data-lotto-g="${j}" title="Hide or show group ${L[j]}">${L[j]}</button></th>`).join("");
     const rows = list.map((l, i) => `<tr><td class="muted">${i + 1}</td>
-      <td class="lt-leg">${l.url ? `<a href="${esc(l.url)}" target="_blank" rel="noopener" title="${esc(l.src || "")}">${esc(l.label)}</a>` : esc(l.label)}${l.q ? ` <span class="badge q">${esc(l.q)}</span>` : ""}</td>
+      <td class="lt-leg">${TREND.link(l)}${l.q ? ` <span class="badge q">${esc(l.q)}</span>` : ""}</td>
       <td><b>${pct1(l.p)}</b></td>
       ${priced ? `<td>${cents(l.price)}</td><td>${xs(1 / l.price)}</td>` : `<td>${xs(1 / l.p)}</td>`}
       ${groups.length ? `<td class="lg-gap"></td>` : ""}${groups.map((gr, j) => `<td class="lg" data-g="${j}">${gr.ix.includes(i) ? `<span class="lg-dot g${j}">●</span>` : ""}</td>`).join("")}</tr>`).join("");
@@ -830,46 +758,5 @@ const BASKETS = (() => {
   // a fold-away explanation, so the rules are there when wanted and out of the way otherwise
   const how = (body, label = "How these are picked") => `<details class="how"><summary>${label}</summary><div>${body}</div></details>`;
 
-  function basketsHtml(baskets, priced) {
-    const good = priced ? baskets.filter((b) => b.ev >= 0) : baskets, bad = priced ? baskets.filter((b) => b.ev < 0) : [];
-    const lead = priced
-      ? `Parlays of up to 10 legs built around one storyline, paying more than ${MIN_NET + 1}x. Green = the payout beats the chance after the checks.`
-      : "Model-only preview: compare each basket's break-even payout with Polymarket's price once props are posted.";
-    return `<div class="lotto"><h3>Storyline baskets</h3><div class="muted small">${lead}</div>
-      ${good.length ? `<div class="baskets">${good.map((b) => card(b, priced)).join("")}</div>` : `<div class="empty">${bad.length ? "Every storyline that could be built is overpriced right now." : "No storyline here happens in at least 1 game in 5 and can be built from legs deep enough for a $" + STAKE + " bet."}</div>`}
-      ${bad.length ? `<details class="vet-skipped"><summary>${bad.length} more storyline${bad.length > 1 ? "s" : ""}, overpriced right now</summary><div class="baskets">${bad.map((b) => card(b, priced)).join("")}</div></details>` : ""}
-      ${how(foot(priced))}</div>`;
-  }
-
-  function card(b, priced) {
-    const lift = b.pj / b.prod;
-    const legRows = b.legs.map((l) => `
-      <tr>
-        <td>${l.url ? `<a href="${esc(l.url)}" target="_blank" rel="noopener" title="${esc(l.src || "")}">${esc(l.label)}</a>` : esc(l.label)}${l.q ? ` <span class="badge q" title="On the injury report">${esc(l.q)}</span>` : ""}${priced && l.flags.length ? `<div>${l.flags.map((f) => `<span class="badge q">${esc(f)}</span>`).join(" ")}</div>` : ""}</td>
-        <td><b>${pct(l.p)}</b></td>
-        ${priced ? `<td><b>${cents(l.price)}</b>${l.bid != null ? `<div class="muted small">bid ${cents(l.bid)}</div>` : ""}</td>
-        <td class="${l.edge >= 0 ? "edge-good" : "edge-bad"}">${l.edge >= 0 ? "+" : "−"}${Math.abs(Math.round(l.edge * 100))}</td>` : `<td class="muted">${l.kind === "player" ? "model line" : "market line"}</td>`}
-      </tr>`).join("");
-    const summary = priced
-      ? `Pays <b>${xs(b.pay)}</b> at $${STAKE} fill prices · careful chance <b>${pct(b.pAdj)}</b> <span class="muted">(model ${pct(b.pj)}${Math.abs(lift - 1) > 0.05 ? `, ${pct(b.prod)} if the legs were unrelated` : ""})</span>
-         · expected return <b class="${b.ev >= 0 ? "edge-good" : "edge-bad"}">${b.ev >= 0 ? "+" : "−"}${Math.abs(Math.round(b.ev * 100))}%</b>`
-      : `Model chance <b>${pct(b.pj)}</b>${Math.abs(lift - 1) > 0.05 ? ` <span class="muted">(${pct(b.prod)} if unrelated)</span>` : ""} · break-even payout <b>${xs(1 / b.pj)}</b>: worth it only if Polymarket pays more than that`;
-    return `
-      <div class="basket ${priced ? (b.ev >= 0 ? "good" : "bad") : ""}">
-        <div class="basket-head"><b>${esc(b.title)}</b></div>
-        <div class="muted small">${esc(b.blurb)}</div>
-        ${b.pt != null ? `<div class="small theme">Storyline: <b>${esc(b.themeTxt)}</b>, about <b>${pct(b.pt)}</b> of games.${b.given != null ? ` When it happens, this basket hits <b>${pct(b.given)}</b> of the time.` : ""}</div>` : ""}
-        <div class="table-wrap"><table>
-          <thead><tr><th>Leg</th><th>Model</th>${priced ? `<th title="What $${STAKE} would really cost per share">Price</th><th title="Model chance minus price, in cents">Edge</th>` : `<th>Line</th>`}</tr></thead>
-          <tbody>${legRows}</tbody>
-        </table></div>
-        <div class="basket-sum">${summary}</div>
-      </div>`;
-  }
-
-  function foot(priced) {
-    return `${priced ? `Priced from Polymarket's order book at what a $${STAKE} bet would really cost (within 2¢ of the best ask; thinner markets are left out, wide ones flagged). If Polymarket's parlay builder quotes a different price for the combo, use that. ` : ""}Every storyline happens in at least 1 simulated game in 5. The basket on top of it can have up to 10 legs and be a long one, down to about 1 in 40; with prices, it's the one where the payout beats the odds by the most, judged on each leg's adjusted chance (the model corrected by its track record and blended with Polymarket's price, as in the pressure test) rather than the raw model, and counting only half of the simulated boost from legs moving together. Each basket includes at least one bet on the game itself, one leg per player, one bet on the winner (spread or moneyline), one total, and no legs the model or the market gives under about 40%. The game is simulated ${N.toLocaleString()} times so related legs move together (a QB and his top receiver, a team that's ahead running more); how strongly they move together is the model's estimate, not yet tested on past games. Players ruled Out or Doubtful are never used; Questionable ones are marked.`;
-  }
-
-  return { underpriced, underLists, pull, STAKE, UNDER_MIN_EDGE, LOTTO_MAX, MIN_THEME, render, clear, pickSix, pullWindow, parseMarket, simulate, joint, best, stories, themed, pack, popcount, and, how, legsFromModel, legsFromMarkets, priceBooks, eventMatches, N };
+  return { underpriced, underLists, pull, STAKE, UNDER_MIN_EDGE, LOTTO_MAX, MIN_THEME, render, clear, pullWindow, parseMarket, simulate, joint, stories, themed, pack, popcount, and, how, legsFromModel, legsFromMarkets, priceBooks, eventMatches, N };
 })();

@@ -335,12 +335,14 @@ def team_context(tg, prior=None):
         pace = ((g.poss + g.o_poss) / 2).mean()
         raw = {"pace": pace, "ortg": 100 * g.pts.sum() / g.poss.sum(), "drtg": 100 * g.o_pts.sum() / g.o_poss.sum(),
                "reb100": 100 * g.reb.sum() / g.poss.sum(), "fg3100": 100 * g.fg3.sum() / g.poss.sum(),
+               "ast100": 100 * g.ast.sum() / g.poss.sum(),
                "o_reb100": 100 * g.o_reb.sum() / g.o_poss.sum(), "o_ast100": 100 * g.o_ast.sum() / g.o_poss.sum(),
                "o_fg3100": 100 * g.o_fg3.sum() / g.o_poss.sum()}
         base = {"pace": lg["pace"], "ortg": lg["rtg"], "drtg": lg["rtg"], "reb100": lg["reb100"], "fg3100": lg["fg3100"],
+                "ast100": lg["ast100"],
                 "o_reb100": lg["reb100"], "o_ast100": lg["ast100"], "o_fg3100": lg["fg3100"]}
         if prior and ab in prior["teams"]:
-            base = {k: 0.5 * (base[k] + prior["teams"][ab][k]) for k in base}
+            base = {k: 0.5 * (base[k] + prior["teams"][ab].get(k, base[k])) for k in base}
         e = {k: shrink(raw[k], n, base[k], 10) for k in raw}
         e.update({"games": n, "ppg": g.pts.mean(), "opp_ppg": g.o_pts.mean(),
                   "record": f"{int((g.pts > g.o_pts).sum())}-{int((g.pts < g.o_pts).sum())}"})
@@ -387,6 +389,35 @@ def game_script(tm, opp, ctx, gm, is_home):
     implied = gm["home_pts"] if is_home else gm["away_pts"]
     return {"pace_f": clip(gm["pace"] / T["pace"], 0.9, 1.1), "pts_f": clip(implied / base_pts, 0.85, 1.15),
             "implied": implied, "margin": gm["margin"]["mean"] * (1 if is_home else -1)}
+
+
+def team_projection(tm, opp, ctx, gm, is_home):
+    """The team's own line for this game from team stats alone: points (the implied score),
+    rebounds, assists, and 3-pointers (game pace x the team's rate x what the opponent allows).
+
+    The page makes the players add up to these: points to the implied score exactly, the
+    others to a 50/50 blend with the players' own sum (see reconcile() in nba.js). On the
+    2024-25 and 2025-26 seasons the 50/50 blend was closer to real team totals than either
+    alone, and scaling players to it didn't hurt their own accuracy.
+    """
+    T, O = ctx["teams"][tm], ctx["teams"][opp]
+    pace = gm["pace"]
+    return {"pts": gm["home_pts"] if is_home else gm["away_pts"],
+            "reb": pace * T["reb100"] / 100 * O["f_reb"],
+            "ast": pace * T.get("ast100", ctx["league"]["ast100"]) / 100 * O["f_ast"],
+            "fg3": pace * T["fg3100"] / 100 * O["f_fg3"]}
+
+
+def bench_rates(box):
+    """Per-minute production of deep-bench players (under 10 minutes a game), whose minutes the
+    page counts but doesn't list."""
+    p = box[box.played]
+    if p.empty:
+        return {"pts": 0.35, "reb": 0.17, "ast": 0.07, "fg3": 0.035}
+    avg = p.groupby("pid")["min"].transform("mean")
+    d = p[avg < 10]
+    m = max(float(d["min"].sum()), 1.0)
+    return {k: round(float(d[k].sum()) / m, 4) for k in ("pts", "reb", "ast", "fg3")}
 
 
 # ---------------------------------------------------------------- player projection
@@ -848,13 +879,14 @@ def build(today, run_backtest=True):
         gm = game_model(home, away, ctx, spread, total)
         game = {"id": gid, "date": g["date"], "t": g["t"], "home": home, "away": away, "spread": spread,
                 "total": total, "line_src": src, "home_ml": hml, "away_ml": aml, "model": gm, "script": {},
-                "players": {home: [], away: []}, "bench_min": {}}
+                "team_model": {}, "players": {home: [], away: []}, "bench_min": {}}
         if gid in final:
             game["final"] = True
             game["home_score"], game["away_score"] = final[gid]
         for tm, opp, is_home in ((home, away, True), (away, home, False)):
             gs = game_script(tm, opp, ctx, gm, is_home)
             game["script"][tm] = {k: round(v, 3) for k, v in gs.items()}
+            game["team_model"][tm] = {k: round(v, 2) for k, v in team_projection(tm, opp, ctx, gm, is_home).items()}
             # everyone who has played lately, with minutes fitted to the team's 240. The page
             # refits after taking out whoever the injury report rules out.
             team = {}
@@ -919,6 +951,7 @@ def build(today, run_backtest=True):
         "season": season_label(season), "season_year": season, "today": today.isoformat(),
         "stats_through": max(box.date) if len(box) else None, "dates": dates,
         "league": ctx["league"], "calibration": calib, "team_names": TEAM_NAMES,
+        "bench_rate": bench_rates(pd.concat([prev_box, box])),
         "teams": ctx["teams"], "games": games, "players": players,
     }
     return rnd(out), bt

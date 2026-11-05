@@ -10,8 +10,8 @@
 //   1. single legs priced below their adjusted chance (Verified or Caution in the pressure test), and
 //   2. legs from the same game that tell one story (a favorite covers and its lead back goes over),
 //      which hit together more often than their prices multiplied. Polymarket prices each leg on
-//      its own, so that lift is free value. Only half of the simulated lift is counted, since
-//      how strongly legs move together hasn't been tested on past games.
+//      its own, so that lift is free value. Only half of the simulated lift is counted: the
+//      simulation's weights are fitted to past seasons, but a lift is still an estimate.
 // Legs from different games are treated as unrelated.
 //
 // Steps, per day:
@@ -169,7 +169,7 @@ const LOCKS = (() => {
 
   function legRow(l) {
     const v = l.vet;
-    return `<tr><td class="lk-leg">${l.url ? `<a href="${esc(l.url)}" target="_blank" rel="noopener" title="${esc(l.src || "")}">${esc(l.label)}</a>` : esc(l.label)}${l.q ? ` <span class="badge q">${esc(l.q)}</span>` : ""}</td>
+    return `<tr><td class="lk-leg">${TREND.link(l)}${l.q ? ` <span class="badge q">${esc(l.q)}</span>` : ""}</td>
       <td><span class="vet-badge vet-${v.level === "verified" ? "verified" : "caution"}" title="${esc([v.adjNote, ...v.reasons.map((r) => r.text)].filter(Boolean).join(" · "))}">${v.level === "verified" ? "Verified" : v.level === "caution" ? "Caution" : "Fair price"}</span></td>
       <td><b>${pct(v.pAdj)}</b><div class="muted small">model ${pct(l.p)}</div></td><td>${cents(l.price)}</td></tr>`;
   }
@@ -189,7 +189,7 @@ const LOCKS = (() => {
     </div>`;
   }
 
-  const HOW = `A lock here is the likeliest kind of parlay worth betting, not a sure thing: 2 to 5 legs across at least two of the day's games, paying ${MIN_PAY}x to ${MAX_PAY}x. Every leg is a real Polymarket line priced ${Math.round(PRICE_LO * 100)}–${Math.round(PRICE_HI * 100)}¢ that can take a $${BASKETS.STAKE} bet, passes the same pressure test as Underpriced props, and passes the pressure test as Verified or Caution (never Skip). A leg that's only there to complete a same-game story may sit up to a cent under its fair price. Verified legs aren't required, since real Verified misprices are rare; hover a Caution tag to read why. Legs from the same game must fit one storyline that happens in at least 1 game in 5 and never pull against each other; when they move together, only half of the simulated boost is counted. Each lock has to show at least +${Math.round(MIN_EV * 100)}% expected return on those cautious chances, and the ones shown give the most return for the risk, share no player or game result, and use no game in more than three locks (and two locks on one game tell the same story about it). "Chance" is the adjusted chance (model corrected by its track record, blended with Polymarket's price), not the raw model. If Polymarket's parlay builder quotes a lower payout than shown, check it against the "still worth it" number.`;
+  const HOW = `A lock here is the likeliest kind of parlay worth betting, not a sure thing: 2 to 5 legs across at least two of the day's games, paying ${MIN_PAY}x to ${MAX_PAY}x. Every leg is a real Polymarket line priced ${Math.round(PRICE_LO * 100)}–${Math.round(PRICE_HI * 100)}¢ that can take a $${BASKETS.STAKE} bet, passes the same pressure test as Mispriced props, and passes it as Verified or Caution (never Skip). A leg that's only there to complete a same-game story may sit up to a cent under its fair price. Verified legs aren't required, since real Verified misprices are rare; hover a Caution tag to read why. Legs from the same game must fit one storyline that happens in at least 1 game in 5 and never pull against each other; when they move together, only half of the simulated boost is counted (the simulation is fitted to past seasons, but the boost is still an estimate). Each lock has to show at least +${Math.round(MIN_EV * 100)}% expected return on those cautious chances, and the ones shown give the most return for the risk, share no player or game result, and use no game in more than three locks (and two locks on one game tell the same story about it). "Chance" is the adjusted chance (model corrected by its track record, blended with Polymarket's price), not the raw model. If Polymarket's parlay builder quotes a lower payout than shown, check it against the "still worth it" number.`;
 
   // the Lock section: title, day picker, cards. days: [{day, n, open}] for the day picker.
   function html({ sport, day, days, res, waiting }) {

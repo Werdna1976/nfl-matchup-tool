@@ -345,3 +345,29 @@ tr.grp th[rowspan]:first-child { text-align: left; }
 @media (min-width: 1500px) { .modal-card { max-width: 1640px; } }
 .rec-short { display: none; }
 @media (max-width: 700px) { .rec-more { display: none; } .rec-short { display: inline; } }
+
+/* team totals ("How the players add up") */
+.tiny-logo { width: 20px; height: 20px; vertical-align: -4px; }
+table.tt td, table.tt th { text-align: right; }
+table.tt td:first-child, table.tt th:first-child { text-align: left; }
+table.tt tr.grp-row td { text-align: left; font-weight: 600; color: var(--muted); padding-top: 10px; font-size: 0.85em; }
+
+/* player trend panel (trend.js) */
+.drawer.trend { width: min(760px, 100%); z-index: 25; }
+.trend-head { display: flex; gap: 12px; align-items: center; margin-bottom: 8px; }
+.trend-head img { width: 56px; height: 56px; border-radius: 50%; object-fit: cover; background: var(--panel-2); }
+.trend-head h2 { margin: 0; }
+.trend-head .x { margin-left: auto; font-size: 22px; background: none; border: 0; color: var(--text); cursor: pointer; }
+.trend-prop { background: var(--panel-2); border-radius: 10px; padding: 8px 10px; margin-bottom: 8px; }
+.trend h3 { margin: 14px 0 4px; font-size: 15px; }
+.trend-svg { width: 100%; height: auto; }
+.trend-svg text, .spark text { font-size: 10px; fill: var(--muted); }
+.trend-svg text.v { fill: var(--text); font-size: 10.5px; }
+table.trend-t th.hl, table.trend-t td.hl { background: var(--band50); }
+.sparks { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; margin: 10px 0; }
+.sparks .sp { background: var(--panel-2); border-radius: 8px; padding: 6px 6px 2px; }
+.spark { width: 100%; height: 34px; }
+.pm-link { text-decoration: none; font-size: 12px; opacity: 0.75; white-space: nowrap; }
+.pr-leg { white-space: normal; }
+.pr-leg + .pr-leg { margin-top: 3px; }
+table.pairs-t td.lt-leg { min-width: 260px; }

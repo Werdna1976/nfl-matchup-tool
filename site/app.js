@@ -387,7 +387,7 @@ function curGame() { return DATA.games.find((g) => g.id === state.gameId); }
 const PROPS_CARD = () => `
     <button type="button" class="gcard props-card" data-props aria-current="${state.view === "props"}">
       <div class="row"><span class="teams">🔒 Best bets</span></div>
-      <div class="lines">Lock of the week + best underpriced props</div>
+      <div class="lines">Lock of the week + best mispriced props</div>
     </button>`;
 function openProps() { state.view = "props"; renderGames(); window.scrollTo({ top: 0 }); }
 function openFromProps(id) {
@@ -441,6 +441,7 @@ function renderGame() {
         <div class="panel" id="totalTool"></div>
         <div class="panel" id="spreadTool"></div>
       </div>
+      <div class="panel" id="teamTotals"></div>
       <div class="panel">
         <div class="panel-head"><h2>Matchup strength</h2><span class="muted small">Ratings use EPA per play (points added per play) vs. the league. 0 = average.</span></div>
         <div class="grid2">${matchupSide(g, g.away, g.home)}${matchupSide(g, g.home, g.away)}</div>
@@ -451,7 +452,7 @@ function renderGame() {
     </div>
   `;
   GAME_TABS.wire($("#game"));
-  renderTotalTool(g); renderSpreadTool(g); renderPlayers(g); renderSpots(g); renderNotes(g); renderTds(g); renderFinder(g);
+  renderTotalTool(g); renderSpreadTool(g); renderTeamTotals(g); renderPlayers(g); renderSpots(g); renderNotes(g); renderTds(g); renderFinder(g);
   BASKETS.render($("#baskets"), g, basketAdapter(g));
 }
 
@@ -685,17 +686,7 @@ function adjustForInjuries() {
             (p, r) => { for (const k of RIDES[vol]) ROLES.scale(p.proj[g.id][k], r); });
         }
       }
-      // Targets should roughly match the starting QB's attempts (listed receivers see about 86%
-      // of them). Meet halfway: in last season's games that cut errors a little, going all
-      // the way made them worse.
-      const avail = roster.filter((p) => !ROLES.outWeight(p));
-      const qb = avail.filter((p) => p.pos === "QB").sort((a, b) => b.proj[g.id].att.mean - a.proj[g.id].att.mean)[0];
-      const rec = avail.filter((p) => p.pos !== "QB" && p.proj[g.id].tgt);
-      const S = rec.reduce((a, p) => a + p.proj[g.id].tgt.mean, 0);
-      if (qb && S > 0) {
-        const f = 0.5 + 0.5 * 0.86 * qb.proj[g.id].att.mean / S;
-        for (const p of rec) for (const k of RIDES.tgt) ROLES.scale(p.proj[g.id][k], f);
-      }
+      reconcile(g, tm, roster);
       // rush + rec yards follow whatever happened to the two parts
       for (const p of roster) {
         const d = p.proj[g.id], b = p.base[g.id];
@@ -704,6 +695,97 @@ function adjustForInjuries() {
       for (const p of roster) if (ROLES.outWeight(p) >= 1) ROLES.zeroOut(p, g.id);
     }
   }
+}
+
+// ---------------------------------------------------------------- team totals
+
+// Players' stats have to add up to the team's game. The data file carries a team-level line
+// (team stats alone: attempts, yards, carries, touchdowns from the implied score) and the share
+// of team totals the listed players usually produce. Each team stat's target is half the team
+// line and half what the players add up to; then the players are scaled to hit it:
+//   - receivers' targets, catches, yards, and TDs add up to the team's passing line (times
+//     their usual share; depth receivers who aren't listed catch the rest)
+//   - runners' carries, yards, and TDs (QB runs included) add up to the team's rushing line
+//   - the starting QB moves halfway to the team's passing line (his own numbers forecast him
+//     better than the team's do when he gets hurt or pulled); the rest is backups and trick plays
+//   - touchdowns add up to the implied score (about 0.107 offensive TDs per point), split
+//     between passing and rushing the way the players' own projections split them
+// In 2024-2026 backtests (with market lines) this left receiver and runner projections slightly
+// more accurate and team totals much closer than the plain sum of player lines.
+const RECON_W = 0.5, TGT_PER_ATT = 0.955;
+function reconcile(g, tm, roster) {
+  const T = g.team_model?.[tm], sh = g.share?.[tm];
+  if (!T || !sh) return;
+  const id = g.id, avail = roster.filter((p) => !ROLES.outWeight(p) && p.proj[id]);
+  const qb = avail.filter((p) => p.pos === "QB").sort((a, b) => (b.proj[id].att?.mean || 0) - (a.proj[id].att?.mean || 0))[0];
+  const rec = avail.filter((p) => p.pos !== "QB");
+  const sum = (ps, k) => ps.reduce((a, p) => a + (p.proj[id][k]?.mean || 0), 0);
+  const scaleAll = (ps, k, r) => { if (r > 0 && isFinite(r)) for (const p of ps) ROLES.scale(p.proj[id][k], r); };
+  const out = { qb: qb?.name || null, rows: {} };
+  // team = the reconciled team total; tl = the team-level line alone; before / listed = the
+  // listed players' sum before and after scaling; others = what unlisted players are expected to add
+  const row = (k, team, tl, before, listed, share) => (out.rows[k] = { team, tl, before, listed, others: Math.max(0, team - listed) });
+  // passing: team line, the starter, and what the receivers add up to all count
+  for (const [qk, rk, tl] of [["att", "tgt", T.att * TGT_PER_ATT], ["cmp", "rec", T.cmp], ["pyd", "yds", T.pyd]]) {
+    const q = qb?.proj[id][qk]?.mean, rsum = sum(rec, rk);
+    const qline = qk === "att" ? (q ?? tl) * TGT_PER_ATT : q ?? tl;
+    const target = RECON_W * tl + (1 - RECON_W) * (0.5 * qline + 0.5 * (rsum > 0 ? rsum / sh[rk] : qline));
+    if (rsum > 0) scaleAll(rec, rk, target * sh[rk] / rsum);
+    const qTarget = qk === "att" ? target / TGT_PER_ATT : target;
+    if (qb && q > 0) ROLES.scale(qb.proj[id][qk], Math.sqrt(qTarget / q));
+    row(qk, qTarget, qk === "att" ? T.att : tl, q ?? 0, qb?.proj[id][qk]?.mean ?? 0);
+    row(rk, target, tl, rsum, sum(rec, rk));
+  }
+  // rushing: everyone who runs, QB included
+  for (const k of ["car", "ryd"]) {
+    const s = sum(avail, k);
+    if (!(s > 0)) continue;
+    const target = RECON_W * T[k] + (1 - RECON_W) * s / sh[k];
+    scaleAll(avail, k, target * sh[k] / s);
+    row(k, target, T[k], s, sum(avail, k));
+  }
+  // touchdowns: the implied score sets the total, the players set the pass/run split
+  const ptd = qb?.proj[id].ptd?.mean || 0, rtd = sum(avail, "rtd") / sh.rtd;
+  if (ptd + rtd > 0) {
+    const tds = RECON_W * T.tds + (1 - RECON_W) * (ptd + rtd), passTd = tds * ptd / (ptd + rtd), runTd = tds - passTd;
+    const rs = sum(rec, "td"), us = sum(avail, "rtd");
+    if (ptd > 0) ROLES.scale(qb.proj[id].ptd, passTd / ptd);
+    if (rs > 0) scaleAll(rec, "td", passTd * sh.td / rs);
+    if (us > 0) scaleAll(avail, "rtd", runTd * sh.rtd / us);
+    row("ptd", passTd, T.tds * ptd / (ptd + rtd), ptd, qb?.proj[id].ptd?.mean ?? 0);
+    row("td", passTd, T.tds * ptd / (ptd + rtd), rs, sum(rec, "td"));
+    row("rtd", runTd, T.tds - T.tds * ptd / (ptd + rtd), us, sum(avail, "rtd"));
+    out.tds = tds; out.tl_tds = T.tds;
+  }
+  out.pts = T.pts;
+  (g.recon ||= {})[tm] = out;
+}
+
+// How the players add up to each team's line (Lines & matchup tab)
+function renderTeamTotals(g) {
+  const el = $("#teamTotals");
+  if (!el) return;
+  const R = g.recon || {};
+  if (!R[g.home] && !R[g.away]) { el.innerHTML = ""; return; }
+  const ROWS = [["Passing (starting QB)", [["att", "Pass attempts", 1], ["cmp", "Completions", 1], ["pyd", "Passing yards", 0], ["ptd", "Passing TDs", 2]]],
+    ["Receiving (everyone)", [["tgt", "Targets", 1], ["rec", "Receptions", 1], ["yds", "Receiving yards", 0], ["td", "Receiving TDs", 2]]],
+    ["Rushing (QB included)", [["car", "Rush attempts", 1], ["ryd", "Rushing yards", 0], ["rtd", "Rushing TDs", 2]]]];
+  const side = (tm) => {
+    const r = R[tm];
+    if (!r) return "";
+    return `<div><h3><img src="${logo(tm)}" alt="" class="tiny-logo"> ${esc(DATA.team_names[tm])}</h3>
+      <div class="table-wrap"><table class="tt">
+        <thead><tr><th>Stat</th><th title="Team stats alone: pace, pass rate, matchup, implied score">Team line</th><th title="What the listed players added up to before reconciling">Players, raw</th><th title="The listed players now (what every prop on the page uses)">Players</th><th title="Expected from players too small to list, or from backup QBs">Rest</th><th>Team total</th></tr></thead>
+        <tbody>${ROWS.map(([grp, rows]) => `<tr class="grp-row"><td colspan="6">${grp}</td></tr>` + rows.filter(([k]) => r.rows[k]).map(([k, label, dec]) => {
+          const x = r.rows[k];
+          return `<tr><td>${label}</td><td>${fmt(x.tl, dec)}</td><td class="muted">${fmt(x.before, dec)}</td><td><b>${fmt(x.listed, dec)}</b></td><td class="muted">${fmt(x.others, dec)}</td><td><b>${fmt(x.team, dec)}</b></td></tr>`;
+        }).join("")).join("")}
+        ${r.tds != null ? `<tr class="grp-row"><td colspan="6">Scoring</td></tr><tr><td>Offensive TDs</td><td>${fmt(r.tl_tds, 2)}</td><td colspan="3" class="muted small">from ${fmt(r.pts, 1)} implied points</td><td><b>${fmt(r.tds, 2)}</b></td></tr>` : ""}
+        </tbody></table></div>
+      ${r.qb ? `<div class="muted small">Passing is ${esc(r.qb)}'s line; the receivers' column adds up to the team's passing total.</div>` : ""}</div>`;
+  };
+  el.innerHTML = `<div class="panel-head"><h2>How the players add up</h2><span class="muted small">Every player prop on this page is scaled so each team's players add up to one team line: half from team stats (pace, pass rate, matchup, the score the betting line implies), half from the players' own projections. "Rest" is what players too small to list usually add.</span></div>
+    <div class="grid2">${side(g.away)}${side(g.home)}</div>`;
 }
 
 // ---------------------------------------------------------------- player notes
@@ -810,13 +892,28 @@ const PM_STATS = {
   rushingreceivingyards: "rry", rushandreceivingyards: "rry", rushrecyards: "rry", rushingandreceivingyards: "rry", scrimmageyards: "rry",
   anytimetouchdown: "anytd", anytimetd: "anytd", anytimetouchdownscorer: "anytd", touchdown: "anytd", touchdowns: "anytd", scoreatouchdown: "anytd", tds: "anytd",
 };
-// how each stat moves with its team's scoring (b), with being ahead (m), and with the team's passing game (pass)
+// How each stat moves with the game, fitted to 2024-2026 results (about 1,400 games: each
+// player's result vs. his projection, paired with teammates', opponents', and the final score).
+// Factors: b = his team's scoring, m = his team's lead (backs run more ahead, QBs throw more
+// behind), pass = his team's passing volume, poss = how much of the game his team has the ball
+// (one team's long drives are the other's short game: opposing lead backs' carries run -0.29),
+// env = a passing-friendly game for both sides (opposing QBs' yards run +0.16), tds = touchdowns
+// going through the air rather than on the ground, comp = sharing one pool (two backs split
+// carries, receivers split targets: a QB's yards run +0.41 with his top receiver's, but two
+// receivers' yards barely move together, +0.02).
 const PM_LOAD = {
-  pyd: { b: 0.5, m: -0.15, pass: 0.5 }, ptd: { b: 0.55, m: 0, pass: 0.3 }, cmp: { b: 0.2, m: -0.25, pass: 0.5 }, att: { b: 0, m: -0.4, pass: 0.35 },
-  int: { b: -0.2, m: -0.2, pass: 0 }, ryd: { b: 0.3, m: 0.3, pass: 0 }, car: { b: 0.15, m: 0.45, pass: 0 }, rtd: { b: 0.45, m: 0.15, pass: 0 },
-  yds: { b: 0.35, m: -0.1, pass: 0.4 }, rec: { b: 0.2, m: -0.15, pass: 0.4 }, td: { b: 0.45, m: 0, pass: 0.2 }, anytd: { b: 0.5, m: 0.05, pass: 0.1 },
-  rry: { b: 0.35, m: 0.2, pass: 0.15 },
+  QB: { att: { b: 0.11, m: -0.37, pass: 0.79, env: 0.34 }, cmp: { b: 0.26, m: -0.36, pass: 0.8, env: 0.37 }, pyd: { b: 0.49, m: -0.35, pass: 0.79, env: 0.31 },
+    ptd: { b: 0.62, m: -0.19, pass: 0.38, tds: 0.52 }, int: { b: -0.03, m: -0.24 }, car: { m: 0.14 }, ryd: { b: 0.04, m: -0.09 },
+    rtd: { b: 0.2, tds: -0.3 }, anytd: { b: 0.2, tds: -0.3 } },
+  RB: { car: { b: -0.05, m: 0.29, poss: 0.28, comp: { rb: 0.4 } }, ryd: { m: 0.27, poss: 0.41, comp: { rb: 0.45 } },
+    rtd: { b: 0.2, m: 0.14, poss: -0.09, tds: -0.44 }, anytd: { b: 0.2, m: 0.1, tds: -0.35 },
+    tgt: { m: -0.22, pass: 0.3 }, rec: { m: -0.22, pass: 0.3 }, yds: { b: 0.08, m: -0.1, pass: 0.22 }, td: { b: 0.25, pass: 0.15, tds: 0.2 },
+    rry: { m: 0.2, poss: 0.32, pass: 0.08, comp: { rb: 0.35 } } },
+  WR: { tgt: { b: 0.08, m: -0.21, pass: 0.22, env: 0.27, comp: { rec: 0.5 } }, rec: { b: 0.18, m: -0.17, pass: 0.25, env: 0.24, comp: { rec: 0.5 } },
+    yds: { b: 0.24, m: -0.16, pass: 0.2, env: 0.16, comp: { rec: 0.5 } }, td: { b: 0.32, pass: 0.19, tds: 0.26 }, anytd: { b: 0.32, pass: 0.19, tds: 0.26 },
+    rry: { b: 0.24, m: -0.16, pass: 0.2, env: 0.16, comp: { rec: 0.5 } }, car: { b: 0.05 }, ryd: { b: 0.05 }, rtd: { b: 0.2 } },
 };
+PM_LOAD.TE = PM_LOAD.WR;
 const PM_TAGS = { pyd: ["qb", "score"], ptd: ["qb", "score"], cmp: ["qb"], att: ["qb"], yds: ["rec", "skill", "score"], rec: ["rec", "skill"], ryd: ["skill", "rush"], car: ["skill", "rush"], anytd: ["skill", "score"], rtd: ["skill"], td: ["skill"], rry: ["skill", "rush"] };
 function basketAdapter(g) {
   const nickOf = (tm) => (DATA.team_names[tm] || tm).split(" ").slice(-1)[0];
@@ -854,7 +951,9 @@ function basketAdapter(g) {
     mainLine: (pl, k) => (k === "anytd" ? 0.5 : k === "ptd" ? 1.5 : ladderMid(pl.d[k], stepFor(k, pl, pl.d[k]))),
     prob: (pl, k, line) => (k === "anytd" ? probs({ mean: lam(pl), sd: Math.sqrt(lam(pl)), dist: "poisson" }, line) : pl.d[k] ? probs(pl.d[k], line) : null),
     tags: (pl, k) => PM_TAGS[k] || [],
-    load: (pl, k) => ({ ...(PM_LOAD[k] || { b: 0.3, m: 0, pass: 0 }), w: 0 }),
+    load: (pl, k) => PM_LOAD[pl.pos]?.[k] || { b: 0.3 },
+    // pools of teammates who split one supply: lead backs split carries, receivers split targets
+    pools: (pl) => (pl.pos === "RB" && (pl.d.car?.mean || 0) >= 4 ? ["rb"] : ["WR", "TE"].includes(pl.pos) && (pl.d.tgt?.mean || 0) >= 3 ? ["rec"] : []),
     // for the checks in vet.js: the chance with his volume times r, his projection, the model's track record
     scaled: (pl, k, line, r) => {
       if (k === "anytd") { const l = lam(pl) * r; return probs({ mean: l, sd: Math.sqrt(l), dist: "poisson" }, line); }
@@ -1136,6 +1235,20 @@ function renderStatDetail(p, k, d, g) {
 
 function closeModal() { $("#modal").hidden = true; }
 
+// The side panel that opens when a player prop is clicked on a Bets list (trend.js)
+TREND.config = {
+  player: (pid) => DATA.players[pid],
+  keys: (p) => POS_STATS[p.pos] || [],
+  val: (r, k) => (k === "anytd" ? (r.rtd || 0) + (r.td || 0) : r[k] ?? 0),
+  label: (k) => (k === "anytd" ? "Touchdowns (rushing + receiving)" : STATS[k].label),
+  short: (k) => (k === "anytd" ? "TDs" : STATS[k].short),
+  when: (r, split) => (split ? [`Wk ${r.w}`, r.opp] : `Wk ${r.w} ${r.opp}`),
+  log: (p) => p.log,
+  teamLine: (p) => `${DATA.team_names[p.team] || p.team} ${p.pos} · ${p.log.length} games this season${p.inj?.status ? ` · ${p.inj.status}` : ""}`,
+  proj: (p, l, k) => (k === "anytd" ? null : p.proj?.[l.gid]?.[k]?.mean ?? null),
+  more: (l) => { const g = DATA.games.find((x) => x.id === l.gid); if (g) openPlayer(l.pid, g); },
+};
+
 // ---------------------------------------------------------------- slip
 
 function addLeg(leg) {
@@ -1196,8 +1309,9 @@ function openHow() {
       <p><b>Teammates who are out.</b> When a player is listed Out (or Doubtful, counted at 75%), his carries go to the other backs and most of his targets to the other receivers, weighted toward his position. A starting QB out hands his volume to the backup at lower efficiency. Where a teammate has played games without him, those real numbers are blended in. Changed numbers carry a ▲ or ▼.</p>
       <p><b>What it doesn't know.</b> Injuries during the week until the page refreshes, weather beyond what's listed, coaching changes, and snap-count news. A player listed Questionable could be on a snap limit.</p>
       <p><b>Using it for alt lines.</b> If the model says 80% and Polymarket charges 70¢, that's a possible edge. If it charges 85¢, it isn't. Multiplying many 80% legs drops fast: five of them is about 33%.</p>
-      <p><b>Polymarket bets.</b> From the day before kickoff (or within 24 hours of the start) each game's <b>Bets</b> tab reads Polymarket's player and game markets, priced at what a $20 bet would really cost. <b>Underpriced props</b> are single bets at least 3¢ below the model's chance, each pressure-tested (the model's track record, Polymarket's whole line ladder, the sportsbook line, injuries, news, and price moves) and graded Verified, Caution, or Skip. <b>Storyline baskets</b> are longer parlays built around one story; the game is simulated 6,000 times so legs move together the way they do in real games (a QB's yards and his top receiver's rise together, a team that's ahead runs more). <b>Lottery tickets</b> are long shots priced at or below their chance.</p>
-      <p><b>Lock of the week.</b> On the Best bets page: two to five legs across at least two games on the same day, paying 2.5x to 5x, built from legs the pressure test grades Verified or Caution (never Skip), with same-game legs that fit one storyline. It counts only half of the simulated boost from legs moving together and needs at least +2% expected return on those cautious chances. How strongly legs move together is a reasoned estimate, not yet checked against past games.</p>
+      <p><b>Players add up to the team.</b> Each team's players are scaled so they add up to one team line: passing, receiving, rushing, and touchdowns meet halfway between a team-stats line and the players' own sum (see <b>How the players add up</b> on the Lines &amp; matchup tab). Tested on past seasons, this made team totals much closer and didn't hurt the player projections.</p>
+      <p><b>Polymarket bets.</b> From the day before kickoff (or within 24 hours of the start) each game's <b>Bets</b> tab reads Polymarket's player and game markets, priced at what a $20 bet would really cost. <b>Mispriced props</b> are single bets where the model's fair price is at least 3¢ above Polymarket's, each pressure-tested (the model's track record, Polymarket's whole line ladder, the sportsbook line, injuries, news, and price moves) and graded Verified, Caution, or Skip. <b>Pairs that pull apart</b> and <b>pairs that move together</b> come from simulating the game 6,000 times with weights fitted to past seasons (a QB's passing yards and his top receiver's yards +0.41, opposing lead backs' carries −0.29, a lead back's carries and his own QB's attempts −0.11); each shows its break-even payout next to straight multiplication of the two prices. <b>Lottery tickets</b> are long shots priced at or below their chance. Click any player's bet to see his last 10 games.</p>
+      <p><b>Lock of the week.</b> On the Best bets page: two to five legs across at least two games on the same day, paying 2.5x to 5x, built from legs the pressure test grades Verified or Caution (never Skip), with same-game legs that fit one storyline. It counts only half of the simulated boost from legs moving together and needs at least +2% expected return on those cautious chances.</p>
     </div>
     ${bt.length ? `<div class="panel"><h3>Track record this season</h3>
       <div class="small muted" style="margin-bottom:6px">${esc(BACKTEST.note)} A well-tuned model lands about 80% inside its 80% range and 50% inside its 50% range. "Avg miss" is the average gap between projection and result.</div>

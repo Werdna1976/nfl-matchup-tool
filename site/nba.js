@@ -382,7 +382,7 @@ function curGame() { return DATA.games.find((g) => g.id === state.gameId); }
 const PROPS_CARD = () => `
     <button type="button" class="gcard props-card" data-props aria-current="${state.view === "props"}">
       <div class="row"><span class="teams">🔒 Best bets</span></div>
-      <div class="lines">Lock of the day + best underpriced props</div>
+      <div class="lines">Lock of the day + best mispriced props</div>
     </button>`;
 function openProps() { state.view = "props"; renderGames(); window.scrollTo({ top: 0 }); }
 function openFromProps(id) {
@@ -433,6 +433,7 @@ function renderGame() {
         <div class="panel" id="totalTool"></div>
         <div class="panel" id="spreadTool"></div>
       </div>
+      <div class="panel" id="teamTotals"></div>
       <div class="panel">
         <div class="panel-head"><h2>Matchup strength</h2><span class="muted small">Ratings compare each team with the league per 100 possessions. 0 = average.</span></div>
         <div class="grid2">${matchupSide(g, g.away, g.home)}${matchupSide(g, g.home, g.away)}</div>
@@ -443,7 +444,7 @@ function renderGame() {
     </div>
   `;
   GAME_TABS.wire($("#game"));
-  renderTotalTool(g); renderSpreadTool(g); renderPlayers(g); renderSpots(g); renderNotes(g); renderFinder(g);
+  renderTotalTool(g); renderSpreadTool(g); renderTeamTotals(g); renderPlayers(g); renderSpots(g); renderNotes(g); renderFinder(g);
   BASKETS.render($("#baskets"), g, basketAdapter(g));
 }
 
@@ -678,6 +679,7 @@ function adjustForInjuries() {
       const lost = outs.reduce((a, m) => a + ROLES.outWeight(m) * ROLES.share(m, tm, roster, "d", g.date, 5) * m.base[g.id].pts.mean, 0);
       if (outs.length) ROLES.cap(mates, mates.map((p) => before.get(p)), lost, (p) => p.proj[g.id].pts.mean,
         (p, r) => { for (const k of RATE_KEYS) ROLES.scale(p.proj[g.id][k], r); });
+      reconcile(g, tm, avail);
       // combined props follow their parts
       for (const p of roster) {
         const d = p.proj[g.id], b = p.base[g.id];
@@ -693,6 +695,56 @@ function adjustForInjuries() {
     for (const pid of g.players[tm] || []) if (ROLES.outWeight(DATA.players[pid]) >= 1) ROLES.zeroOut(DATA.players[pid], g.id);
   }
   DD_CACHE.clear();
+}
+
+// ---------------------------------------------------------------- team totals
+
+// Players' stats have to add up to the team's game. Expected team points = each player's points
+// times his chance of playing, plus the deep bench's minutes at their usual rate. Points are
+// scaled to add up to the implied score exactly (the betting line knows the most about scoring).
+// Rebounds, assists, and threes go to a 50/50 blend of the team-level line (pace x team rate x
+// what the opponent allows) and the players' own sum. Backtested on 2024-25 and 2025-26 games,
+// the blend was closer to real team totals than either one, and player accuracy held.
+const RECON_KEYS = { pts: 1, reb: 0.5, ast: 0.5, fg3: 0.5 };   // weight on the team-level line
+function reconcile(g, tm, avail) {
+  const T = g.team_model?.[tm];
+  if (!T) return;
+  const id = g.id, bench = (g.bench_min?.[tm] || 0);
+  const pp = (p) => (p.role?.[id]?.pp ?? 1) * (ROLES.outWeight(p) ? 0.25 : 1);
+  const out = { rows: {}, min: avail.reduce((a, p) => a + pp(p) * p.proj[id].min.mean, 0) + bench, bench };
+  for (const [k, w] of Object.entries(RECON_KEYS)) {
+    const others = bench * (DATA.bench_rate?.[k] ?? 0);
+    const E = avail.reduce((a, p) => a + pp(p) * p.proj[id][k].mean, 0);
+    if (!(E > 0) || T[k] == null) continue;
+    const team = w * T[k] + (1 - w) * (E + others);
+    const r = (team - others) / E;
+    if (r > 0 && isFinite(r)) for (const p of avail) ROLES.scale(p.proj[id][k], r);
+    out.rows[k] = { tl: T[k], before: E, listed: E * r, others, team };
+  }
+  (g.recon ||= {})[tm] = out;
+}
+
+// How the players add up to each team's line (Lines & matchup tab)
+function renderTeamTotals(g) {
+  const el = $("#teamTotals");
+  if (!el) return;
+  const R = g.recon || {};
+  const ROWS = [["pts", "Points", 1], ["reb", "Rebounds", 1], ["ast", "Assists", 1], ["fg3", "3-pointers made", 1]];
+  const side = (tm) => {
+    const r = R[tm];
+    if (!r) return "";
+    return `<div><h3><img src="${logo(tm)}" alt="" class="tiny-logo"> ${esc(DATA.team_names[tm])}</h3>
+      <div class="table-wrap"><table class="tt">
+        <thead><tr><th>Stat</th><th title="Team stats alone (points: the score the betting line implies)">Team line</th><th title="Listed players before reconciling, each weighted by his chance of playing">Players, raw</th><th title="Listed players now (what every prop on the page uses)">Players</th><th title="Deep bench (under 10 minutes a game) at their usual rate">Rest</th><th>Team total</th></tr></thead>
+        <tbody>${ROWS.filter(([k]) => r.rows[k]).map(([k, label, dec]) => {
+          const x = r.rows[k];
+          return `<tr><td>${label}</td><td>${fmt(x.tl, dec)}</td><td class="muted">${fmt(x.before, dec)}</td><td><b>${fmt(x.listed, dec)}</b></td><td class="muted">${fmt(x.others, dec)}</td><td><b>${fmt(x.team, dec)}</b></td></tr>`;
+        }).join("")}
+        <tr><td>Minutes</td><td>240</td><td class="muted"></td><td><b>${fmt(r.min - r.bench, 0)}</b></td><td class="muted">${fmt(r.bench, 0)}</td><td><b>${fmt(r.min, 0)}</b></td></tr>
+        </tbody></table></div></div>`;
+  };
+  el.innerHTML = R[g.home] || R[g.away] ? `<div class="panel-head"><h2>How the players add up</h2><span class="muted small">Each player's numbers count by his chance of playing. Points add up to the score the betting line implies; rebounds, assists, and threes to a blend of the team's line and the players' own. Every player prop on this page uses the scaled numbers.</span></div>
+    <div class="grid2">${side(g.away)}${side(g.home)}</div>` : "";
 }
 
 // ---------------------------------------------------------------- double-doubles
@@ -835,7 +887,19 @@ const PM_STATS = {
 };
 // share of a stat's game-to-game swing that follows its team's scoring (b), kept modest because teammates also
 // compete for the same shots; starters lose a little in blowouts (w)
-const PM_LOAD = { pts: 0.3, fg3: 0.2, ast: 0.25, reb: 0.1, pra: 0.3, pr: 0.25, pa: 0.3, ra: 0.2, stl: 0.05, blk: 0.05, sb: 0.05, tov: 0.1 };
+// How each stat moves with the game, fitted to the 2024-25 and 2025-26 seasons (about 1,700
+// games: each player's result vs. his projection, paired with teammates', opponents', and the
+// final score). b = his team's scoring (points +0.19 with the game total for starters, rebounds
+// slightly negative: more makes, fewer misses to rebound), w = a blowout (starters lose minutes:
+// points -0.13, rebounds -0.15; rotation bench players barely change), comp = sharing the ball
+// with the other regulars (two starters' points run -0.02 to -0.03, not together).
+const PM_LOAD = {
+  pts: { b: 0.23, w: -0.13, comp: { pts: 0.61 } }, reb: { b: -0.06, w: -0.15, comp: { reb: 0.25 } }, ast: { b: 0.18, w: -0.08, comp: { ast: 0.49 } },
+  fg3: { b: 0.15, w: -0.06, comp: { fg3: 0.32 } }, pra: { b: 0.2, w: -0.15, comp: { pts: 0.45, ast: 0.15 } }, pr: { b: 0.18, w: -0.15, comp: { pts: 0.45 } },
+  pa: { b: 0.23, w: -0.12, comp: { pts: 0.45, ast: 0.2 } }, ra: { b: 0.06, w: -0.12, comp: { ast: 0.3, reb: 0.15 } },
+  stl: { b: 0.05 }, blk: { b: 0.05 }, sb: { b: 0.05 }, tov: { b: 0.1 },
+};
+const BENCH_LOAD = { pts: 0.14, ast: 0.08, fg3: 0.11, reb: -0.08 };   // rotation bench players: smaller team link, no blowout effect
 const PM_TAGS = { pts: ["score"], fg3: ["score"], ast: ["help"], reb: ["help"], ra: ["help"], pra: ["big"], pr: ["big"], pa: ["big"] };
 function basketAdapter(g) {
   const nickOf = (tm) => (DATA.team_names[tm] || tm).split(" ").slice(-1)[0];
@@ -866,7 +930,13 @@ function basketAdapter(g) {
     mainLine: (pl, k) => ladderMid(pl.d[k], stepFor(k, pl.d[k])),
     prob: (pl, k, line) => (pl.d[k] ? probs(pl.d[k], line) : null),
     tags: (pl, k) => PM_TAGS[k] || [],
-    load: (pl, k) => ({ b: PM_LOAD[k] ?? 0.2, m: 0, pass: 0, w: pl.d.min.mean >= 28 ? -0.25 : pl.d.min.mean < 18 ? 0.15 : 0 }),
+    load: (pl, k) => {
+      const L = PM_LOAD[k] || { b: 0.2 };
+      if (pl.d.min.mean >= 28) return L;
+      return { b: BENCH_LOAD[k] ?? (L.b || 0) * 0.6, comp: pl.d.min.mean >= 24 ? L.comp : undefined };
+    },
+    // the regulars (24+ minutes) share one supply of shots, rebounds, and assists
+    pools: (pl) => (pl.d.min.mean >= 24 ? ["pts", "reb", "ast", "fg3"] : []),
     // for the checks in vet.js: the chance with his minutes times r, his projection, the model's track record
     scaled: (pl, k, line, r) => {
       if (!pl.d[k]) return null;
@@ -1006,6 +1076,23 @@ function chartSvg(log, k, d) {
 }
 
 const pv = { n: 10, stat: "pts" };
+
+// The side panel that opens when a player prop is clicked on a Bets list (trend.js)
+TREND.config = {
+  player: (pid) => DATA.players[pid],
+  keys: () => ["min", "pts", "reb", "ast", "fg3", "pra", "pr", "pa", "ra", "stl", "blk", "tov", "fg3a"],
+  val: (r, k) => val(r, k),
+  label: (k) => STATS[k].label,
+  short: (k) => STATS[k].short,
+  when: (r, split) => {
+    const d = `${Number(r.d.slice(5, 7))}/${Number(r.d.slice(8, 10))}`, o = `${r.h ? "" : "@"}${r.opp}`;
+    return split ? [d, o] : `${d} ${o}${r.ly ? " (last season)" : ""}`;
+  },
+  log: (p) => p.log,
+  teamLine: (p) => `${DATA.team_names[p.team] || p.team} ${p.pos || ""} · ${p.log.filter((r) => !r.ly).length} games this season${p.inj?.status ? ` · ${p.inj.status}` : ""}`,
+  proj: (p, l, k) => p.proj?.[l.gid]?.[k]?.mean ?? null,
+  more: (l) => { const g = DATA.games.find((x) => x.id === l.gid); if (g) openPlayer(l.pid, g); },
+};
 
 function openPlayer(pid, g) {
   renderPlayerView(pid, g);
@@ -1163,8 +1250,9 @@ function openHow() {
       <p><b>Teammates who are out.</b> When a regular is listed Out (or Doubtful, counted at 75%), the lineup and minutes are refit without him, with more of his minutes going to his position, and the scoring, rebounding, and passing those minutes don't cover is spread across the rest. Where a teammate has played games without him, those real numbers are blended in. Changed numbers carry a ▲ or ▼.</p>
       <p><b>What it doesn't know.</b> Late scratches until the page refreshes, minutes limits, and coaching choices. Check the injury report close to tip-off.</p>
       <p><b>Using it for alt lines.</b> If the model says 80% and Polymarket charges 70¢, that's a possible edge. If it charges 85¢, it isn't. Multiplying many 80% legs drops fast: five of them is about 33%.</p>
-      <p><b>Polymarket bets.</b> On game day (or within 24 hours of tip-off) each game's <b>Bets</b> tab reads Polymarket's player and game markets, priced at what a $20 bet would really cost. <b>Underpriced props</b> are single bets at least 3¢ below the model's chance, each pressure-tested (the model's track record, Polymarket's whole line ladder, the sportsbook line, injuries, news, and price moves) and graded Verified, Caution, or Skip. <b>Storyline baskets</b> are longer parlays built around one story; the game is simulated 6,000 times so legs move together the way they do in real games (a fast, high-scoring night lifts every scorer, a blowout sits the starters). <b>Lottery tickets</b> are long shots priced at or below their chance.</p>
-      <p><b>Lock of the day.</b> On the Best bets page: two to five legs across at least two of the day's games, paying 2.5x to 5x, built from legs the pressure test grades Verified or Caution (never Skip), with same-game legs that fit one storyline. It counts only half of the simulated boost from legs moving together and needs at least +2% expected return on those cautious chances. How strongly legs move together is a reasoned estimate, not yet checked against past games.</p>
+      <p><b>Players add up to the team.</b> Each team's players are scaled so they add up: points to the score the betting line implies, rebounds, assists, and threes to a blend of a team-stats line and the players' own sum (see <b>How the players add up</b> on the Lines &amp; matchup tab). Tested on past seasons, this made team totals much closer and didn't hurt the player projections.</p>
+      <p><b>Polymarket bets.</b> On game day (or within 24 hours of tip-off) each game's <b>Bets</b> tab reads Polymarket's player and game markets, priced at what a $20 bet would really cost. <b>Mispriced props</b> are single bets where the model's fair price is at least 3¢ above Polymarket's, each pressure-tested (the model's track record, Polymarket's whole line ladder, the sportsbook line, injuries, news, and price moves) and graded Verified, Caution, or Skip. <b>Pairs that pull apart</b> and <b>pairs that move together</b> come from simulating the game 6,000 times with weights fitted to past seasons (a starter's points +0.19 with the game total, two starters' points −0.02 (they share the ball), a starter's points −0.13 in a blowout); each shows its break-even payout next to straight multiplication of the two prices. <b>Lottery tickets</b> are long shots priced at or below their chance. Click any player's bet to see his last 10 games.</p>
+      <p><b>Lock of the day.</b> On the Best bets page: two to five legs across at least two of the day's games, paying 2.5x to 5x, built from legs the pressure test grades Verified or Caution (never Skip), with same-game legs that fit one storyline. It counts only half of the simulated boost from legs moving together and needs at least +2% expected return on those cautious chances.</p>
     </div>
     ${bt.length ? `<div class="panel"><h3>Track record</h3>
       <div class="small muted" style="margin-bottom:6px">${esc(BACKTEST.note)} A well-tuned model lands about 80% inside its 80% range and 50% inside its 50% range. "Avg miss" is the average gap between projection and result.</div>

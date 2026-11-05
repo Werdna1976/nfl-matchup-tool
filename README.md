@@ -17,15 +17,19 @@ starts out matching your computer's setting and remembers your choice).
     +2% expected return on cautious chances (half of the simulated "legs move together" boost counted), and
     the ones shown give the most return for the risk, share no player or game result, and use a game in at
     most three locks. Each card shows its "still worth it" payout, for when Polymarket's parlay builder quotes less.
-  - **Best underpriced props**: single bets across every game today and tomorrow, pressure-tested.
+  - **Best mispriced props**: single bets across every game today and tomorrow where the model's fair price
+    beats Polymarket's, pressure-tested.
 - **Each game** has four tabs:
-  - **Bets** (Polymarket, opens on its own): **Underpriced props** (single bets at least 3¢ under the model,
-    graded Verified / Caution / Skip), **Storyline baskets** (parlays of up to 10 legs around one story,
-    paying more than 5x; overpriced ones are folded away), and **Lottery tickets** (long shots at 4–30¢ priced at
-    or below their chance, with small A–G groups that tend to hit together).
+  - **Bets** (Polymarket, opens on its own): **Mispriced props** (single bets where the model's fair price is at
+    least 3¢ above Polymarket's, graded Verified / Caution / Skip), **Pairs that pull apart** (two props that land
+    together less often than their chances multiplied but still at least 1 game in 8, with the payout a parlay needs
+    to be worth it), **Pairs that move together** (the opposite: value when a parlay pays straight multiplication),
+    and **Lottery tickets** (long shots at 4–30¢ priced at or below their chance). Click any player's bet to open a
+    side panel with his last 10 games: every stat, the bet's stat highlighted, each game marked hit or miss.
   - **Players**: projections with 80% ranges, anytime TD (NFL), the alt-line finder, and best spots. Tap a
     player for game logs, an odds ladder on Polymarket's steps, and a chart.
-  - **Lines & matchup**: total and spread sliders, matchup strength.
+  - **Lines & matchup**: total and spread sliders, **How the players add up** (each team's line next to what its
+    players add up to), matchup strength.
   - **Notes & injuries**: injury report, hot and cold streaks, teammates out, ESPN headlines.
 - **Parlay slip** (header): add legs, type Polymarket prices, compare with the model.
 - **How the model works** (footer link): the method and its track record.
@@ -42,6 +46,20 @@ with Polymarket's midpoint (plus the sportsbook line for game bets); Verified ne
 Basket and lock returns are judged on adjusted chances too, not the raw model.
 
 ### Models
+
+**Players add up to the team.** Each team gets a line from team stats alone (NFL: pace, pass rate, matchup, and
+touchdowns from the score the betting line implies; NBA: the implied score, plus pace times the team's rebound,
+assist, and 3-point rates against what the opponent allows). Players are scaled so they add up to it. NFL
+passing, receiving, rushing, and touchdowns meet halfway between the team line and the players' own sum (the
+starting QB moves half as far, since his own numbers forecast him better); NBA points add up to the implied score
+exactly and the rest to a 50/50 blend. Unlisted depth players keep their usual share. In 2024–2026 backtests this
+brought team totals much closer (NFL team receiving yards: average miss 72 when summed from the receivers, 61 blended) and left player
+projections as good or slightly better.
+
+**How props move together.** The game simulation behind the pairs and locks is fitted to past results (each
+player's result vs. his projection, paired with teammates', opponents', and the final score): NFL 2024–2026,
+NBA 2024-25 and 2025-26. Examples: a QB's passing yards and his top receiver's yards +0.41, opposing lead backs'
+carries −0.29, two NBA starters' points −0.02.
 
 The NFL player model blends recent form with last season, sets each range from the size of the role, and
 mixes "normal" and occasional "dud" games so the upper tail isn't stretched. Its weights live in
@@ -93,5 +111,6 @@ cd site && python -m http.server 8000 # open http://localhost:8000
 - `scripts/nba_build.py` downloads NBA data, builds projections, and tests the ranges on past games.
 - `site/` is the web pages (plain HTML, CSS, JavaScript; no build step): `index.html` + `app.js` for NFL,
   `nba.html` + `nba.js` for NBA. Shared by both: `nav.js` (dark/light toggle, game tabs), `baskets.js`
-  (Polymarket pull, simulation, baskets, underpriced props, lottery), `vet.js` (pressure test), `locks.js`
+  (Polymarket pull, simulation, mispriced props, lottery), `pairs.js` (pairs that pull apart / move together),
+  `trend.js` (the last-10-games side panel), `vet.js` (pressure test), `locks.js`
   (Lock of the week/day), `allprops.js` (Best bets view), `notes.js`, `roles.js`, `result.js`.
