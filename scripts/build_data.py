@@ -398,6 +398,55 @@ def _project_old(vals, col, kind, pos, f, out, cvs, rates, calib):
     return {"mean": round(mean, 2), "sd": round(max(cv * mean, 0.5), 2), "dist": "gamma", "f": round(f, 3)}
 
 
+# Offensive touchdowns per point scored, 2024-2026 regular seasons (the rest is field goals,
+# extra points, and defensive or return scores)
+TD_PER_PT = 0.107
+# Teams' targets run about 4.5% below pass attempts (throwaways, spikes, batted balls)
+TGT_PER_ATT = 0.955
+
+
+def team_projection(tm, opp, teams, lg, gs, implied):
+    """The team's own line for this game, from team stats alone: pass attempts, completions,
+    passing yards, carries, rushing yards, and offensive touchdowns.
+
+    The page blends this with the sum of the player projections (50/50) and scales players so
+    their stats add up to the blend. In 2024-2026 backtests the team-level numbers were closer to
+    real team totals than summed player lines, and scaling receivers and runners to the blend
+    made their own projections a little more accurate too.
+    """
+    T, O = teams[tm], teams[opp]
+    nd = O["def"].get("games", O["games"])
+    att = T["off"]["att"] * gs["pass_vol"]
+    return {
+        "att": att,
+        "cmp": att * lg["cmp_rate"] * shrink(O["def"]["cmp_rate"] / lg["cmp_rate"], nd, 1, 6),
+        "pyd": T["off"]["pass_ypg"] * gs["pass_vol"] * shrink(O["def"]["ypp"] / lg["ypp"], nd, 1, 4),
+        "car": T["off"]["car"] * gs["rush_vol"],
+        "ryd": T["off"]["rush_ypg"] * gs["rush_vol"] * shrink(O["def"]["ypc"] / lg["ypc"], nd, 1, 4),
+        "tds": implied * TD_PER_PT,
+        "pts": implied,
+    }
+
+
+def listed_share(stats, team_stats, tm, pids, upto_week):
+    """Share of the team's season totals (before this week) that the listed players produced.
+
+    The rest belongs to players too small to list (third backs, depth receivers, trick plays),
+    so the listed players should add up to the team total times this share, not the whole of it.
+    """
+    s = stats[(stats.team == tm) & (stats.week < upto_week)]
+    t = team_stats[(team_stats.team == tm) & (team_stats.week < upto_week)]
+    mine = s[s.player_id.isin(pids)]
+    out = {}
+    for col, short, group in (("carries", "car", None), ("rushing_yards", "ryd", None), ("rushing_tds", "rtd", None),
+                              ("targets", "tgt", "rec"), ("receptions", "rec", "rec"),
+                              ("receiving_yards", "yds", "rec"), ("receiving_tds", "td", "rec")):
+        tot = float(t[col].sum())
+        rows = mine[mine.position != "QB"] if group else mine
+        out[short] = clip(float(rows[col].fillna(0).sum()) / tot, 0.6, 1.0) if tot > 0 else 0.92
+    return out
+
+
 def game_model(home, away, teams, lg, spread_line, total_line):
     """Model points for each side, blended with the betting market (market weighted 80%)."""
     H, A = teams[home], teams[away]
@@ -534,7 +583,7 @@ def build(season):
                 "away_ml": None if pd.isna(r.away_moneyline) else int(r.away_moneyline),
                 "roof": r.roof, "wind": None if pd.isna(r.wind) else int(r.wind),
                 "temp": None if pd.isna(r.temp) else int(r.temp),
-                "model": gm, "script": {},
+                "model": gm, "script": {}, "team_model": {}, "share": {},
                 "players": {home: [], away: []},
             }
             if not pd.isna(r.home_score) and not pd.isna(r.away_score):
@@ -544,9 +593,10 @@ def build(season):
                 implied = gm["home_pts"] if sign == 1 else gm["away_pts"]
                 gs = game_script(tm, opp, teams, lg, margin, implied)
                 game["script"][tm] = {k: round(v, 3) for k, v in gs.items()}
-                for pid in eligible_players(stats, tm, week):
-                    if players[pid]["team"] != tm:
-                        continue
+                game["team_model"][tm] = {k: round(v, 2) for k, v in team_projection(tm, opp, teams, lg, gs, implied).items()}
+                listed = [pid for pid in eligible_players(stats, tm, week) if players[pid]["team"] == tm]
+                game["share"][tm] = {k: round(v, 3) for k, v in listed_share(stats, team_stats, tm, listed, week).items()}
+                for pid in listed:
                     pg = stats[(stats.player_id == pid) & (stats.week < w)].sort_values("week")
                     players[pid]["proj"][r.game_id] = project_player(pg, players[pid]["pos"], opp, teams, lg, gs, cvs, rates, calib, prev.get(pid))
                     game["players"][tm].append(pid)

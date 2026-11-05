@@ -3,7 +3,7 @@
 // The Best bets view, shared by the NFL and NBA pages: the Lock of the week / day (locks.js) on
 // top, then the best underpriced props across every game today and tomorrow.
 //
-// Each game is pulled from Polymarket the same way its own "Underpriced props" section is
+// Each game is pulled from Polymarket the same way its own "Mispriced props" section is
 // (BASKETS.pull + legsFromMarkets + underpriced): real listed lines, $20 of depth near the ask,
 // one row per line ladder. Then the games are merged into one list, biggest edge first, and
 // spread out so no single game or kind of bet fills the page.
@@ -95,8 +95,8 @@ const ALLPROPS = (() => {
       : "No game's prices are open yet.";
 
     const chips = infos.map((i) => `<button type="button" class="note-chip ap-chip ${i.rows.length ? "good" : ""}" data-open="${esc(i.g.id)}" title="${esc(i.why || "Open this game")}"><b>${esc(i.match)}</b> ${i.dayTxt} ${esc(clock(i.when))} · ${esc(i.status)}</button>`).join("");
-    const intro = `<h2 class="ap-h">Best underpriced props <span class="muted lk-day">today and tomorrow</span></h2><div class="muted small">Single bets where Polymarket's price is at least ${Math.round(BASKETS.UNDER_MIN_EDGE * 100)}¢ below the model's chance, from every ${esc(sport)} game today and tomorrow. Trust the <b>Check</b> column over the raw edge. Click a game to open it.</div>
-      ${BASKETS.how(`Same rules as each game's Underpriced props: real listed lines only, each takes a $${BASKETS.STAKE} bet near the price shown, one row per line ladder, long shots under ${Math.round(BASKETS.LOTTO_MAX * 100)}¢ left out.<br><br>${VET.RULES}`)}`;
+    const intro = `<h2 class="ap-h">Best mispriced props <span class="muted lk-day">today and tomorrow</span></h2><div class="muted small">Single bets where the model's fair price is at least ${Math.round(BASKETS.UNDER_MIN_EDGE * 100)}¢ above Polymarket's, from every ${esc(sport)} game today and tomorrow. Trust the <b>Check</b> column over the raw edge. Click a game to open it, or a player's bet to see his last 10 games.</div>
+      ${BASKETS.how(`Same rules as each game's Mispriced props: real listed lines only, each takes a $${BASKETS.STAKE} bet near the price shown, one row per line ladder, long shots under ${Math.round(BASKETS.LOTTO_MAX * 100)}¢ left out.<br><br>${VET.RULES}`)}`;
     const sorter = `<div class="ap-sort"><span class="muted small">Order:</span>
       <button type="button" class="chip" data-ap-sort="best" aria-pressed="${sortMode === "best"}">Best first</button>
       <button type="button" class="chip" data-ap-sort="game" aria-pressed="${sortMode === "game"}">By game</button></div>`;
