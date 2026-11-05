@@ -12,7 +12,7 @@ starts out matching your computer's setting and remembers your choice).
   - **Lock of the week** (NFL) / **Lock of the day** (NBA): up to five short parlays across one day's games
     (for example all of Sunday's NFL games, never two days at once), each paying 2.5x to 5x. Every leg is a
     real Polymarket line priced 35–92¢ with $20 of depth that the pressure test grades Verified or Caution
-    (never Skip); Verified legs aren't required, since real Verified misprices are rare. Legs from the same game must fit
+    (never Flagged); Verified legs aren't required, since real Verified misprices are rare. Legs from the same game must fit
     one storyline that happens in at least 1 game in 5 and never pull against each other. Each lock needs
     +2% expected return on cautious chances (half of the simulated "legs move together" boost counted), and
     the ones shown give the most return for the risk, share no player or game result, and use a game in at
@@ -21,10 +21,10 @@ starts out matching your computer's setting and remembers your choice).
     beats Polymarket's, pressure-tested.
 - **Each game** has four tabs:
   - **Bets** (Polymarket, opens on its own): **Mispriced props** (single bets where the model's fair price is at
-    least 3¢ above Polymarket's, graded Verified / Caution / Skip), **Pairs that pull apart** (two props that land
+    least 3¢ above Polymarket's, graded Verified / Caution / Flagged; flagged bets stay listed with their likely issue named), **Pairs that pull apart** (two props that land
     together less often than their chances multiplied but still at least 1 game in 8, with the payout a parlay needs
     to be worth it), **Pairs that move together** (the opposite: value when a parlay pays straight multiplication),
-    and **Lottery tickets** (long shots at 4–30¢ priced at or below their chance). Click any player's bet to open a
+    and **Lottery tickets** (long shots at 4–30¢ priced at or below their chance). Click any player's bet (or its **Last 10** button) to open a
     side panel with his last 10 games: every stat, the bet's stat highlighted, each game marked hit or miss.
   - **Players**: projections with 80% ranges, anytime TD (NFL), the alt-line finder, and best spots. Tap a
     player for game logs, an odds ladder on Polymarket's steps, and a chart.

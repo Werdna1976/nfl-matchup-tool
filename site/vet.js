@@ -8,7 +8,8 @@
 // reason. The grade:
 //   Verified  every check passes and the adjusted edge is at least MIN_ADJ
 //   Caution   something worth reading first, or the adjusted edge is small
-//   Skip      a check failed badly: likely news or model error, not a mispricing
+//   Flagged   a check failed badly (news, a role change, sportsbooks or the market disagreeing).
+//             Still listed, with the likely cause named, so the bet can be judged on its stats.
 //
 // The adjusted chance blends the model (corrected by its own track record on that kind of bet)
 // with Polymarket's midpoint, and for game lines with the sportsbook line too. It's a fairer
@@ -253,7 +254,7 @@ const VET = (() => {
 
   // ------------------------------------------------------------ display
 
-  const LABEL = { verified: "Verified", caution: "Caution", skip: "Skip" };
+  const LABEL = { verified: "Verified", caution: "Caution", skip: "Flagged" };
   const ICON = { ok: "✓", warn: "⚠", bad: "✕" };
   const escH = (s) => String(s ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
 
@@ -264,6 +265,30 @@ const VET = (() => {
     return `<td class="vet-cell"><span class="vet-badge vet-${v.level}">${LABEL[v.level]}</span><div class="muted small" title="Adjusted chance ${pctTxt(v.pAdj)}: the model corrected by its track record, blended with Polymarket's midpoint${v.pBook != null ? " and the sportsbook line" : ""}">adj. ${ec(v.adj)}</div></td>`;
   }
 
+  // The most likely reason a flagged bet looks cheap, in a few words, from its failed checks.
+  // Null when nothing points anywhere: then it may be a real mispricing or something the model can't see.
+  const CAUSES = [
+    [/^Health news|may sit or leave early/, "injury news"],
+    [/^Polymarket (prices him|rates his)/, "Polymarket sees a different role (news or lineup)"],
+    [/^Sportsbooks disagree/, "sportsbooks disagree with the model"],
+    [/^Price fell/, "money moving against it today"],
+    [/^A \d+¢ edge/, "edge too big to be real: likely model error"],
+  ];
+  function issue(row) {
+    const v = row.vet;
+    if (!v || v.level !== "skip") return null;
+    const bad = v.reasons.filter((r) => r.lvl === "bad");
+    for (const [re, txt] of CAUSES) if (bad.some((r) => re.test(r.text))) return txt;
+    const track = v.reasons.find((r) => /^Track record/.test(r.text) && r.lvl === "warn");
+    if (track) return "model runs hot on bets like this";
+    return null;
+  }
+  function issueLine(row) {
+    if (row.vet?.level !== "skip") return "";
+    const t = issue(row);
+    return `<div class="vet-issue">${t ? `Likely issue: <b>${escH(t)}</b>` : `Likely issue: <b>unclear</b>. Polymarket's price is well below the model, but no check found why. Could be real value or something the model can't see`}</div>`;
+  }
+
   // the reasons, under the bet: problems first, then up to two passes
   function why(row) {
     const v = row.vet;
@@ -272,14 +297,14 @@ const VET = (() => {
     const rs = [...v.reasons].sort((a, b) => rank[a.lvl] - rank[b.lvl]);
     const shown = [...(v.adjNote ? [{ lvl: v.level === "skip" && !rs.some((r) => r.lvl === "bad") ? "bad" : "warn", text: v.adjNote }] : []),
       ...rs.filter((r) => r.lvl !== "ok"), ...rs.filter((r) => r.lvl === "ok").slice(0, 2)];
-    if (!shown.length) return "";
-    return `<ul class="vet-why">${shown.map((r) => `<li class="vet-${r.lvl}"><span aria-hidden="true">${ICON[r.lvl]}</span> ${escH(r.text)}</li>`).join("")}</ul>`;
+    if (!shown.length) return issueLine(row);
+    return `${issueLine(row)}<ul class="vet-why">${shown.map((r) => `<li class="vet-${r.lvl}"><span aria-hidden="true">${ICON[r.lvl]}</span> ${escH(r.text)}</li>`).join("")}</ul>`;
   }
 
-  // best first, with Skips held back for their own list
+  // best first, by the edge left after the checks
   const sort = (rows) => [...rows].sort((a, b) => (a.vet && b.vet ? b.vet.adj - a.vet.adj : b.edge - a.edge));
 
-  const RULES = `Each bet is checked before it's listed: the model's record on that kind of bet, whether Polymarket's whole line ladder sees the same player the model does, the sportsbook line (game bets), the injury report and practice notes, ESPN headlines from the last 4 days, teammates who are questionable, how far the price moved in the last day, and whether the edge is too big to be real. <b>Verified</b> passes everything with at least ${Math.round(MIN_ADJ * 100)}¢ of edge left after adjusting; <b>Caution</b> has something to read first; <b>Skip</b> failed a check. "Adj." is the edge after blending the model with Polymarket's own price, which is the number to trust over the raw edge.`;
+  const RULES = `Each bet is checked before it's listed: the model's record on that kind of bet, whether Polymarket's whole line ladder sees the same player the model does, the sportsbook line (game bets), the injury report and practice notes, ESPN headlines from the last 4 days, teammates who are questionable, how far the price moved in the last day, and whether the edge is too big to be real. <b>Verified</b> passes everything with at least ${Math.round(MIN_ADJ * 100)}¢ of edge left after adjusting; <b>Caution</b> has something to read first; <b>Flagged</b> failed a check; it stays in the list with the likely cause named, so you can judge it on the player's stats. "Adj." is the edge after blending the model with Polymarket's own price, which is the number to trust over the raw edge.`;
 
-  return { grade, adjusted, drift, cell, why, sort, RULES, MIN_ADJ, calibrated, impliedScale };
+  return { grade, issue, adjusted, drift, cell, why, sort, RULES, MIN_ADJ, calibrated, impliedScale };
 })();

@@ -18,15 +18,15 @@ const TREND = (() => {
   const legs = new Map();
   let nextId = 1;
 
-  // A prop's label as a button that opens the panel, plus a small link to the Polymarket market
+  // A prop's label plus a "Last 10" chip. Both open the side panel (nothing navigates away);
+  // the Polymarket market is linked from inside the panel instead.
   function link(l) {
-    if (!l || l.kind !== "player" || !config) {
-      return l?.url ? `<a href="${esc(l.url)}" target="_blank" rel="noopener" title="${esc(l.src || "")}">${esc(l.label)}</a>` : esc(l?.label);
-    }
+    if (!l || l.kind !== "player" || !config) return esc(l?.label);
     const id = String(nextId++);
     legs.set(id, l);
     if (legs.size > 3000) legs.delete(legs.keys().next().value);
-    return `<button type="button" class="linkish trend-btn" data-trend="${id}" title="Show ${esc(l.name || "")}'s last ${N} games">${esc(l.label)}</button>${l.url ? `&nbsp;<a class="pm-link" href="${esc(l.url)}" target="_blank" rel="noopener" title="${esc(l.src || "Open on Polymarket")}">↗</a>` : ""}`;
+    const tip = `Show ${esc(l.name || "this player")}'s last ${N} games`;
+    return `<button type="button" class="linkish trend-btn" data-trend="${id}" title="${tip}">${esc(l.label)}</button> <button type="button" class="trend-chip" data-trend="${id}" title="${tip}" aria-label="${tip}"><svg viewBox="0 0 14 10" aria-hidden="true"><rect x="0" y="5" width="3" height="5"/><rect x="5.5" y="2" width="3" height="8"/><rect x="11" y="0" width="3" height="10"/></svg>Last ${N}</button>`;
   }
 
   function el() {
@@ -39,7 +39,12 @@ const TREND = (() => {
     }
     return d;
   }
-  function close() { el().hidden = true; }
+  function close() { el().hidden = true; mark(null); }
+  // keep the bet the panel is showing highlighted on the page underneath
+  function mark(row) {
+    document.querySelectorAll("tr.trend-on").forEach((r) => r.classList.remove("trend-on"));
+    if (row) row.classList.add("trend-on");
+  }
 
   // bars for the prop's stat, oldest to newest, with the line marked
   function bars(rows, k, line, side) {
@@ -102,7 +107,7 @@ const TREND = (() => {
         <tr class="sum"><td>Average</td><td class="hl"><b>${fmt(avg(k, rows), 1)}</b></td>${keys.map((x) => `<td>${fmt(avg(x, rows), 1)}</td>`).join("")}</tr></tbody>
       </table></div>
       <div class="sparks">${keys.map((x) => `<div class="sp"><div class="small"><b>${esc(config.short(x))}</b> <span class="muted">avg ${fmt(avg(x, rows), 1)}</span></div>${spark(rows, x)}</div>`).join("")}</div>
-      ${config.more ? `<button type="button" class="btn" data-more>Full player page</button>` : ""}`;
+      <div class="trend-foot">${config.more ? `<button type="button" class="btn" data-more>Full player page</button>` : ""}${l.url ? `<a class="btn" href="${esc(l.url)}" target="_blank" rel="noopener" title="${esc(l.src || "")}">Open on Polymarket ↗</a>` : ""}</div>`;
     d.querySelector(".x").onclick = close;
     const more = d.querySelector("[data-more]");
     if (more) more.onclick = () => { close(); config.more(l); };
@@ -114,7 +119,7 @@ const TREND = (() => {
     const b = e.target.closest?.("[data-trend]");
     if (!b) return;
     const l = legs.get(b.dataset.trend);
-    if (l) { e.preventDefault(); open(l); }
+    if (l) { e.preventDefault(); open(l); mark(b.closest("tr")); }
   });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); });
 

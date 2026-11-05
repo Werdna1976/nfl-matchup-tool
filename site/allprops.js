@@ -11,9 +11,9 @@
 // The page passes { games, adapter(g), onOpen(gameId), sport }.
 
 const ALLPROPS = (() => {
-  const SHOWN = 40;          // rows in the "best first" list
-  const PER_GAME = 6;        // at most this many from one game in that list
-  const PER_KIND = 4;        // and at most this many of one kind of bet (say, rebounds unders)
+  const SHOWN = 60;          // rows in the "best first" list
+  const PER_GAME = 12;       // at most this many from one game in that list
+  const PER_KIND = 8;        // and at most this many of one kind of bet (say, rebounds unders)
   const POOL = 3;            // games pulled at once
   const REPRICE_MS = 2 * 60 * 1000;
 
@@ -51,17 +51,17 @@ const ALLPROPS = (() => {
     info.legs = legs;
     // each row pressure-tested (vet.js) against its own game's markets
     info.rows = BASKETS.underpriced(legs, (l) => VET.grade(l, { A, g, legs })).map((l) => ({ ...l, gi: info }));
-    info.status = `${info.rows.filter((l) => l.vet.level !== "skip").length} passed checks${rec.src === "saved" ? " (saved prices)" : ""}`;
+    info.status = `${info.rows.length} below the model, ${info.rows.filter((l) => l.vet.level !== "skip").length} passed checks${rec.src === "saved" ? " (saved prices)" : ""}`;
     info.ok = true;
     return info;
   }
 
   // the cross-game list: the most edge left after the checks first, capped per game and per
-  // kind of bet. Skips aren't in it; they're listed apart.
+  // kind of bet. Flagged bets are in it too, with their likely issue named.
   function best(all, n = SHOWN) {
     const kindOf = (l) => (l.kind === "player" ? `${l.key}|${l.side}` : l.kind === "total" ? "total" : "result");
     const byGame = new Map(), byKind = new Map(), out = [];
-    for (const r of VET.sort(all.filter((l) => l.vet?.level !== "skip"))) {
+    for (const r of VET.sort(all)) {
       if (out.length >= n) break;
       const ng = byGame.get(r.gi) || 0, nk = byKind.get(kindOf(r)) || 0;
       if (ng >= PER_GAME || nk >= PER_KIND) continue;
@@ -95,7 +95,7 @@ const ALLPROPS = (() => {
       : "No game's prices are open yet.";
 
     const chips = infos.map((i) => `<button type="button" class="note-chip ap-chip ${i.rows.length ? "good" : ""}" data-open="${esc(i.g.id)}" title="${esc(i.why || "Open this game")}"><b>${esc(i.match)}</b> ${i.dayTxt} ${esc(clock(i.when))} · ${esc(i.status)}</button>`).join("");
-    const intro = `<h2 class="ap-h">Best mispriced props <span class="muted lk-day">today and tomorrow</span></h2><div class="muted small">Single bets where the model's fair price is at least ${Math.round(BASKETS.UNDER_MIN_EDGE * 100)}¢ above Polymarket's, from every ${esc(sport)} game today and tomorrow. Trust the <b>Check</b> column over the raw edge. Click a game to open it, or a player's bet to see his last 10 games.</div>
+    const intro = `<h2 class="ap-h">Best mispriced props <span class="muted lk-day">today and tomorrow</span></h2><div class="muted small">Single bets where the model's fair price is at least ${Math.round(BASKETS.UNDER_MIN_EDGE * 100)}¢ above Polymarket's, from every ${esc(sport)} game today and tomorrow. Flagged bets stay in the list with their likely issue named. Click a game to open it, or a player's bet (or its <b>Last 10</b> button) to see his last 10 games.</div>
       ${BASKETS.how(`Same rules as each game's Mispriced props: real listed lines only, each takes a $${BASKETS.STAKE} bet near the price shown, one row per line ladder, long shots under ${Math.round(BASKETS.LOTTO_MAX * 100)}¢ left out.<br><br>${VET.RULES}`)}`;
     const sorter = `<div class="ap-sort"><span class="muted small">Order:</span>
       <button type="button" class="chip" data-ap-sort="best" aria-pressed="${sortMode === "best"}">Best first</button>
@@ -132,14 +132,12 @@ const ALLPROPS = (() => {
       if (el._apToken !== token) return;
       body = infos.filter((i) => i.rows.length).map((i) => `<div class="ap-gamehead"><button type="button" class="linkish" data-open="${esc(i.g.id)}"><b>${esc(i.match)}</b></button> <span class="muted small">${i.dayTxt} ${esc(clock(i.when))} · ${i.rows.length} underpriced, ${i.rows.filter((l) => l.vet?.level === "verified").length} verified</span></div>${BASKETS.underLists(i.rows)}`).join("");
     } else {
-      const skipped = VET.sort(all.filter((l) => l.vet?.level === "skip")).slice(0, 20);
-      await VET.drift([...best(all, Math.round(SHOWN * 1.5)), ...skipped]);
+      await VET.drift(best(all, Math.round(SHOWN * 1.5)));
       if (el._apToken !== token) return;
-      const top = best(all), skip = VET.sort(all.filter((l) => l.vet?.level === "skip")).slice(0, 20);
-      const nv = top.filter((l) => l.vet.level === "verified").length;
-      body = `<div class="note">${nv} verified, ${top.length - nv} caution${skip.length ? `, ${all.filter((l) => l.vet?.level === "skip").length} failed the checks` : ""}. Ordered by the edge left after the checks, not the raw edge.</div>`
-        + BASKETS.underLists([...top, ...skip], gameCell)
-        + (all.length - skip.length > top.length ? `<div class="note">Showing the best ${top.length} that passed, with at most ${PER_GAME} per game and ${PER_KIND} of any one kind of bet so the list stays spread out. "By game" shows them all.</div>` : "");
+      const top = best(all);
+      body = `<div class="note">Ordered by the edge left after the checks, not the raw edge.</div>`
+        + BASKETS.underLists(top, gameCell)
+        + (all.length > top.length ? `<div class="note">Showing ${top.length} of ${all.length}, with at most ${PER_GAME} per game and ${PER_KIND} of any one kind of bet so the list stays spread out. "By game" shows them all.</div>` : "");
     }
 
     // the per-game status chips fold away once every game has its props

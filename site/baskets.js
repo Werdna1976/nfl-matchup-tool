@@ -653,13 +653,14 @@ const BASKETS = (() => {
   // Single bets, no combining: every Polymarket market (props and game lines) whose price is below
   // the model's chance, biggest edge first. Same filters as the baskets: real listed lines, $20 of
   // depth near the ask, no placeholder quotes. Long shots are left to the lottery section.
-  const UNDER_SHOWN = 15, UNDER_MIN_EDGE = 0.03;
+  const UNDER_SHOWN = 30, UNDER_MIN_EDGE = 0.03;
+  const UNDER_PER_PLAYER = 2, UNDER_PER_KIND = 4;   // keep the list spread across players and kinds of bet
   // One row per ladder (all of a team's spreads, one side of the total, one side of a player's
   // stat): its best line, plus the range of lines on that ladder that are also underpriced.
-  // Then a mix: one row per player, one per side of the game result (spread or moneyline), one per
-  // total, and at most two of any one kind of bet (say, assists unders).
-  // With a vet function (VET.grade, bound to the game), every ladder's row is checked first and the
-  // mix is built from the rows that pass, best adjusted edge first; rows that fail come after.
+  // Then a mix: up to two stats per player, one row per side of the game result (spread or
+  // moneyline), one per total, and at most four of any one kind of bet (say, assists unders).
+  // With a vet function (VET.grade, bound to the game), every ladder's row is checked and the mix is
+  // built best adjusted edge first. Flagged rows are kept, with their likely issue named.
   function underpriced(legs, vet = null) {
     const cheap = legs.filter((l) => l.price > LOTTO_MAX && l.edge >= UNDER_MIN_EDGE);
     const ladders = new Map();
@@ -675,21 +676,18 @@ const BASKETS = (() => {
       const range = ls.length > 1 ? `Also cheap: ${short(byLine[0])} to ${short(byLine.at(-1))} (${ls.length} lines, +${Math.round(Math.min(...ls.map((l) => l.edge)) * 100)} to +${Math.round(top.edge * 100)})` : "";
       return { ...top, range };
     }).sort((a, b) => b.edge - a.edge);
-    let failed = [];
-    if (vet) {
-      rows = VET.sort(rows.map(vet));
-      failed = rows.filter((r) => r.vet.level === "skip");
-      rows = rows.filter((r) => r.vet.level !== "skip");
-    }
+    // flagged rows stay in: they're ordered by the edge left after the checks, so they sink on
+    // their own, and each one names its likely issue
+    if (vet) rows = VET.sort(rows.map(vet));
     const kindOf = (l) => (l.kind === "player" ? `${l.key}|${l.side}` : l.kind === "total" ? "total" : `result|${l.side}`);
-    const used = new Map(), seen = new Set(), out = [];
+    const used = new Map(), per = new Map(), out = [];
     for (const r of rows) {
       if (out.length >= UNDER_SHOWN) break;
-      const who = r.kind === "player" ? r.grp : kindOf(r), n = used.get(kindOf(r)) || 0;
-      if (seen.has(who) || n >= 2) continue;   // one row per player / result side / total, two of any kind
-      out.push(r); seen.add(who); used.set(kindOf(r), n + 1);
+      const who = r.kind === "player" ? r.grp : kindOf(r), n = used.get(kindOf(r)) || 0, m = per.get(who) || 0;
+      if (m >= (r.kind === "player" ? UNDER_PER_PLAYER : 1) || n >= UNDER_PER_KIND) continue;   // two stats per player, one per result side / total, four of any kind
+      out.push(r); per.set(who, m + 1); used.set(kindOf(r), n + 1);
     }
-    return vet ? [...out, ...failed.slice(0, UNDER_SHOWN)] : out.sort((a, b) => b.edge - a.edge);
+    return out;
   }
 
   // One row of the underpriced table (also used by the Best props page, with a Game column)
@@ -701,21 +699,24 @@ const BASKETS = (() => {
   }
   function underTable(rows, gameCol = null) {
     return `<div class="table-wrap"><table class="lotto-t under-t${gameCol ? " ap-t" : ""}">
-      <thead><tr><th>#</th><th class="lt-leg">Bet</th>${gameCol ? `<th class="ap-game">Game</th>` : ""}<th title="The model's chance, as the price it would be fair to pay, and the payout (total back per $1) that price means">Fair price</th><th title="What $20 costs per share on Polymarket now, and what it pays back per $1">Polymarket</th><th title="Fair price minus Polymarket's, in cents; below it, the expected profit per $1 if the model is right">Edge</th><th title="Pressure test: Verified, Caution or Skip, and the edge left after the checks">Check</th></tr></thead>
+      <thead><tr><th>#</th><th class="lt-leg">Bet</th>${gameCol ? `<th class="ap-game">Game</th>` : ""}<th title="The model's chance, as the price it would be fair to pay, and the payout (total back per $1) that price means">Fair price</th><th title="What $20 costs per share on Polymarket now, and what it pays back per $1">Polymarket</th><th title="Fair price minus Polymarket's, in cents; below it, the expected profit per $1 if the model is right">Edge</th><th title="Pressure test: Verified, Caution or Flagged, and the edge left after the checks">Check</th></tr></thead>
       <tbody>${rows.map((l, i) => underRow(l, i, gameCol ? gameCol(l) : "")).join("")}</tbody></table></div>`;
   }
-  // checked rows: the ones that pass first (by the edge left after checks), the Skips folded away below
+  // checked rows in one list, best first by the edge left after the checks; flagged ones stay in,
+  // marked with their likely issue
   function underLists(rows, gameCol = null) {
-    const sorted = VET.sort(rows), keep = sorted.filter((l) => l.vet?.level !== "skip"), skip = sorted.filter((l) => l.vet?.level === "skip");
-    return (keep.length ? underTable(keep, gameCol) : `<div class="empty">Nothing passed the checks right now.</div>`)
-      + (skip.length ? `<details class="vet-skipped"><summary>${skip.length} more failed the checks (likely news or model error, not a mispricing)</summary>${underTable(skip, gameCol)}</details>` : "");
+    const sorted = VET.sort(rows);
+    if (!sorted.length) return `<div class="empty">Nothing priced below the model right now.</div>`;
+    const n = (lv) => sorted.filter((l) => l.vet?.level === lv).length;
+    const counts = sorted.some((l) => l.vet) ? `<div class="muted small vet-counts">${sorted.length} bets priced below the model: ${n("verified")} verified, ${n("caution")} caution, ${n("skip")} flagged (likely issue named under the bet).</div>` : "";
+    return counts + underTable(sorted, gameCol);
   }
 
   function underpricedHtml(list, priced) {
     const box = (body) => `<div class="lotto first"><h3>Mispriced props</h3>${body}</div>`;
     if (!priced) return box(`<div class="empty">Single bets where the model's fair price beats Polymarket's show here once Polymarket posts player props for this game (game day for the NBA, the day before for the NFL, or within 24 hours of the start).</div>`);
-    return box(`<div class="muted small">Single bets where the model's fair price is at least ${Math.round(UNDER_MIN_EDGE * 100)}¢ above Polymarket's, so Polymarket pays more than the bet is worth. Trust the <b>Check</b> column over the raw edge. Click a player's bet to see his last 10 games.</div>
-      ${how(`Each line ladder (a spread, a total, one player's stat) is one row: its best-priced line, with the range of lines that are also cheap. Every row can take a $${STAKE} bet near the price shown. The list is mixed: one row per player, per side of the game result, and per total, and at most two of any one kind of bet. Long shots under ${Math.round(LOTTO_MAX * 100)}¢ are in Lottery tickets below.<br><br>${VET.RULES}`)}
+    return box(`<div class="muted small">Single bets where the model's fair price is at least ${Math.round(UNDER_MIN_EDGE * 100)}¢ above Polymarket's, so Polymarket pays more than the bet is worth. Trust the <b>Check</b> column over the raw edge. Click a player's bet (or its <b>Last 10</b> button) to see his last 10 games.</div>
+      ${how(`Each line ladder (a spread, a total, one player's stat) is one row: its best-priced line, with the range of lines that are also cheap. Every row can take a $${STAKE} bet near the price shown. The list is mixed: up to two stats per player, one row per side of the game result and per total, and at most four of any one kind of bet. Long shots under ${Math.round(LOTTO_MAX * 100)}¢ are in Lottery tickets below.<br><br>${VET.RULES}`)}
       ${list.length ? underLists(list) : `<div class="empty">Nothing underpriced right now.</div>`}`);
   }
 
