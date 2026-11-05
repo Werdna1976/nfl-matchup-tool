@@ -60,8 +60,14 @@ def read_csv(url):
 
 
 def add_combos(stats):
-    """Combined stats books offer as one prop: rushing + receiving yards."""
+    """Combined stats books offer as one prop: rushing + receiving yards. Also files fullbacks
+    with the backs and two-way players listed on defense (Travis Hunter) with the receivers, so
+    their catches and carries are projected instead of falling to "other players"."""
     if len(stats):
+        stats.loc[stats.position == "FB", "position"] = "RB"
+        tgts = stats.groupby("player_id").targets.sum()
+        two_way = stats.player_id.isin(tgts[tgts >= 5].index) & ~stats.position.isin(["QB", "RB", "WR", "TE"])
+        stats.loc[two_way, "position"] = "WR"
         stats["scrimmage_yards"] = stats.rushing_yards.fillna(0) + stats.receiving_yards.fillna(0)
     return stats
 
@@ -338,8 +344,11 @@ def _blend(n, ew, prev, k_prev, k0, target):
     return (n * ew + kp * pm + abs(k0) * target) / den if den > 0 else target
 
 
-def project_player(games, pos, opp, teams, lg, gs, cvs, rates, calib=None, prev=None):
+def project_player(games, pos, opp, teams, lg, gs, cvs, rates, calib=None, prev=None, depth=False):
     """games: the player's per-game rows (oldest first). prev: his line from prev_summary().
+    depth: a depth player (below the regular cutoffs). The fitted baseline is the average for
+    regulars, so pulling him toward it would hand him a starter's share; his own recent games
+    (and last season) are the baseline instead.
 
     Returns {stat: projection}. The average blends recent form, last season, and a baseline,
     then applies the matchup; the spread depends on how big the average is (bigger roles are
@@ -365,7 +374,7 @@ def project_player(games, pos, opp, teams, lg, gs, cvs, rates, calib=None, prev=
             mean = max(abs(P["c"]) * b * f ** P["g"], 0.005)
             out[col] = {"mean": round(mean, 3), "sd": round(math.sqrt(mean), 3), "dist": "poisson", "f": round(f, 3)}
             continue
-        b = _blend(n, base, prev.get(col), P["k_prev"], P["k0"], abs(P["mu"]))
+        b = _blend(n, base, prev.get(col), P["k_prev"], P["k0"], base if depth else abs(P["mu"]))
         mean = max(P["c"] * b * f ** P["g"], 0.05)
         curve = abs(P["a"]) * mean ** (-P["p"])
         m = sum(vals) / n if n else 0.0
@@ -376,6 +385,11 @@ def project_player(games, pos, opp, teams, lg, gs, cvs, rates, calib=None, prev=
         cv = clip(cv * (calib or {}).get(col, 1.0), 0.12, 2.0)
         out[col] = {"mean": round(mean, 2), "sd": round(max(cv * mean, 0.5), 2), "dist": "gmix",
                     "w": round(P["w"], 3), "r": round(P["r"], 3), "k": round(P["k"], 3), "f": round(f, 3)}
+    # a catch needs a target: small samples (or a stat-feed quirk) can put catches above targets
+    rec, tgt = out.get("receptions"), out.get("targets")
+    if rec and tgt and rec["mean"] > 0.95 * tgt["mean"]:
+        r = 0.95 * tgt["mean"] / rec["mean"]
+        rec["mean"], rec["sd"] = round(rec["mean"] * r, 2), round(max(rec["sd"] * r, 0.5), 2)
     return out
 
 
@@ -428,22 +442,28 @@ def team_projection(tm, opp, teams, lg, gs, implied):
     }
 
 
-def listed_share(stats, team_stats, tm, pids, upto_week):
-    """Share of the team's season totals (before this week) that the listed players produced.
+def listed_share(stats, team_stats, tm, pids, upto_week, n_games=3):
+    """Share of the team's recent totals (its last `n_games` games, the
+    same window that decides who is listed) that the listed players produced.
 
-    The rest belongs to players too small to list (third backs, depth receivers, trick plays),
-    so the listed players should add up to the team total times this share, not the whole of it.
+    The rest belongs to players too small to list (practice-squad call-ups, linemen on trick plays,
+    fullbacks), so the listed players add up to the team total times this share and an "other
+    players" line on the page carries the rest. Recent games keep players who have left the team
+    (cut, traded, on injured reserve) from counting as "other". Touchdowns are too rare to measure
+    over three games, so they follow the matching volume share.
     """
-    s = stats[(stats.team == tm) & (stats.week < upto_week)]
-    t = team_stats[(team_stats.team == tm) & (team_stats.week < upto_week)]
+    weeks = sorted(team_stats[(team_stats.team == tm) & (team_stats.week < upto_week)].week.unique())[-n_games:]
+    s = stats[(stats.team == tm) & stats.week.isin(weeks)]
+    t = team_stats[(team_stats.team == tm) & team_stats.week.isin(weeks)]
     mine = s[s.player_id.isin(pids)]
     out = {}
-    for col, short, group in (("carries", "car", None), ("rushing_yards", "ryd", None), ("rushing_tds", "rtd", None),
+    for col, short, group in (("carries", "car", None), ("rushing_yards", "ryd", None),
                               ("targets", "tgt", "rec"), ("receptions", "rec", "rec"),
-                              ("receiving_yards", "yds", "rec"), ("receiving_tds", "td", "rec")):
+                              ("receiving_yards", "yds", "rec")):
         tot = float(t[col].sum())
         rows = mine[mine.position != "QB"] if group else mine
-        out[short] = clip(float(rows[col].fillna(0).sum()) / tot, 0.6, 1.0) if tot > 0 else 0.92
+        out[short] = clip(float(rows[col].fillna(0).sum()) / tot, 0.85, 1.0) if tot > 0 else 0.98
+    out["rtd"], out["td"] = out["car"], out["tgt"]
     return out
 
 
@@ -507,8 +527,12 @@ def current_week(sched):
     return int(upcoming.week.min()) if len(upcoming) else int(sched.week.max())
 
 
-def eligible_players(stats, team, upto_week):
-    """Skill players with a recent role on `team`."""
+def eligible_players(stats, team, upto_week, depth=False):
+    """Skill players with a recent role on `team`. With depth=True (the page), depth backs and
+    receivers stay in so the team's catches and carries add up; at those cutoffs the listed
+    players took about 99% of their team's recent targets and carries (91-92% without them).
+    Backtests and the model fit keep the regular cutoffs."""
+    rb_min, rec_min = (1, 0.5) if depth else (3, 2)
     s = stats[(stats.week < upto_week) & stats.position.isin(POSITION_STATS)]
     team_weeks = sorted(s[s.team == team].week.unique())[-3:]
     recent = s[(s.team == team) & s.week.isin(team_weeks)]
@@ -518,9 +542,9 @@ def eligible_players(stats, team, upto_week):
         allg = s[s.player_id == pid].sort_values("week")
         if pos == "QB" and g.attempts.max() < 10:
             continue
-        if pos == "RB" and ewma(list((allg.carries + allg.targets).fillna(0))) < 3:
+        if pos == "RB" and ewma(list((allg.carries + allg.targets).fillna(0))) < rb_min:
             continue
-        if pos in ("WR", "TE") and ewma(list(allg.targets.fillna(0))) < 2:
+        if pos in ("WR", "TE") and ewma(list(allg.targets.fillna(0))) < rec_min:
             continue
         keep.append(pid)
     return keep
@@ -594,11 +618,13 @@ def build(season):
                 gs = game_script(tm, opp, teams, lg, margin, implied)
                 game["script"][tm] = {k: round(v, 3) for k, v in gs.items()}
                 game["team_model"][tm] = {k: round(v, 2) for k, v in team_projection(tm, opp, teams, lg, gs, implied).items()}
-                listed = [pid for pid in eligible_players(stats, tm, week) if players[pid]["team"] == tm]
+                listed = [pid for pid in eligible_players(stats, tm, week, depth=True) if players[pid]["team"] == tm]
+                regular = set(eligible_players(stats, tm, week))
                 game["share"][tm] = {k: round(v, 3) for k, v in listed_share(stats, team_stats, tm, listed, week).items()}
                 for pid in listed:
                     pg = stats[(stats.player_id == pid) & (stats.week < w)].sort_values("week")
-                    players[pid]["proj"][r.game_id] = project_player(pg, players[pid]["pos"], opp, teams, lg, gs, cvs, rates, calib, prev.get(pid))
+                    players[pid]["proj"][r.game_id] = project_player(pg, players[pid]["pos"], opp, teams, lg, gs, cvs, rates, calib,
+                                                                     prev.get(pid), depth=pid not in regular)
                     game["players"][tm].append(pid)
             games.append(game)
 
