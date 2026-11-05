@@ -593,7 +593,7 @@ function renderPlayers(g) {
         }).join("")}</tbody></table></div>`;
     }).join("");
     return `<div class="team-block"><h3><img src="${logo(tm)}" alt="">${esc(DATA.team_names[tm])} <span class="muted small">${record(tm)}</span></h3>
-      ${tables || `<div class="empty">No players with recent snaps found.</div>`}</div>`;
+      ${tables || `<div class="empty">No players with recent snaps found.</div>`}${state.pos === "ALL" ? teamSumTable(g, tm) : ""}</div>`;
   };
   const shown = state.team === "BOTH" ? [g.away, g.home] : [state.team];
   el.innerHTML = `
@@ -607,6 +607,20 @@ function renderPlayers(g) {
   el.querySelectorAll("[data-team]").forEach((b) => b.onclick = () => { state.team = b.dataset.team; renderPlayers(g); });
   el.querySelectorAll("[data-pos]").forEach((b) => b.onclick = () => { state.pos = b.dataset.pos; renderPlayers(g); });
   el.querySelectorAll("tr[data-pid]").forEach((tr) => tr.onclick = () => openPlayer(tr.dataset.pid, g));
+}
+
+// The team's line under its players: named players + other players = team, and the passing
+// side matches the receiving side (see reconcile)
+const SUM_KEYS = ["att", "cmp", "pyd", "ptd", "car", "ryd", "rtd", "tgt", "rec", "yds", "td"];
+function teamSumTable(g, tm) {
+  const r = g.recon?.[tm];
+  if (!r) return "";
+  const cell = (k, f, i) => { const x = r.rows[k]; return `<td${gsCls(SUM_KEYS, i)}>${x ? fmt(f(x), STATS[k].dec) : "–"}</td>`; };
+  const line = (label, f, b) => `<tr><td>${b ? `<b>${label}</b>` : label}</td>${SUM_KEYS.map((k, i) => cell(k, f, i)).join("")}</tr>`;
+  return `<h4>Team total</h4><div class="table-wrap"><table class="statline">
+    ${statHead(SUM_KEYS, [""])}
+    <tbody>${line("Players above", (x) => x.listed)}${line("Other players", (x) => x.others)}${line("Team", (x) => x.team, true)}</tbody></table></div>
+    <div class="muted small">Passing yards = receiving yards, completions = receptions, passing TDs = receiving TDs. Targets run 4.5% below attempts (throwaways, spikes). A doubtful player counts at 25%.${r.qb ? ` Passing is ${esc(r.qb)}'s line.` : ""}</div>`;
 }
 
 // ---------------------------------------------------------------- teammate injuries
@@ -701,40 +715,49 @@ function adjustForInjuries() {
 
 // Players' stats have to add up to the team's game. The data file carries a team-level line
 // (team stats alone: attempts, yards, carries, touchdowns from the implied score) and the share
-// of team totals the listed players usually produce. Each team stat's target is half the team
-// line and half what the players add up to; then the players are scaled to hit it:
-//   - receivers' targets, catches, yards, and TDs add up to the team's passing line (times
-//     their usual share; depth receivers who aren't listed catch the rest)
-//   - runners' carries, yards, and TDs (QB runs included) add up to the team's rushing line
-//   - the starting QB moves halfway to the team's passing line (his own numbers forecast him
-//     better than the team's do when he gets hurt or pulled); the rest is backups and trick plays
+// of team totals the listed players produced in the team's last three games. Each team stat's
+// target is half the team line and half what the players add up to; then the players are
+// scaled so these hold exactly, every game, for each team:
+//   - passing yards = receiving yards, completions = receptions, passing TDs = receiving TDs,
+//     targets = 95.5% of pass attempts (throwaways, spikes, and batted balls have no target)
+//   - team rushing = the sum of everyone's carries, yards, and TDs, QB runs included
+//   - the passing side is whatever the QBs throw: the starter moves halfway to the target (his
+//     own numbers forecast him better than the team's do), and the receivers then add up to
+//     exactly his line. Listed receivers take their usual share; "other players" (anyone too
+//     small to list, about 1-2% of a team's catches and carries) take the rest.
 //   - touchdowns add up to the implied score (about 0.107 offensive TDs per point), split
 //     between passing and rushing the way the players' own projections split them
-// In 2024-2026 backtests (with market lines) this left receiver and runner projections slightly
-// more accurate and team totals much closer than the plain sum of player lines.
+// A doubtful player counts at the 25% chance he plays; his own line stays "if he plays".
+// In 2024-2026 backtests (with market lines) scaling to the blended team line left receiver and
+// runner projections slightly more accurate and team totals much closer than the plain sum.
 const RECON_W = 0.5, TGT_PER_ATT = 0.955;
+const RECON_KEYS = ["att", "cmp", "pyd", "ptd", "car", "ryd", "rtd", "tgt", "rec", "yds", "td"];
 function reconcile(g, tm, roster) {
   const T = g.team_model?.[tm], sh = g.share?.[tm];
   if (!T || !sh) return;
-  const id = g.id, avail = roster.filter((p) => !ROLES.outWeight(p) && p.proj[id]);
-  const qb = avail.filter((p) => p.pos === "QB").sort((a, b) => (b.proj[id].att?.mean || 0) - (a.proj[id].att?.mean || 0))[0];
-  const rec = avail.filter((p) => p.pos !== "QB");
-  const sum = (ps, k) => ps.reduce((a, p) => a + (p.proj[id][k]?.mean || 0), 0);
+  const id = g.id, dressed = roster.filter((p) => ROLES.outWeight(p) < 1 && p.proj[id]);
+  // one QB throws: the likeliest starter. Other QBs' lines are "if he plays" and stay out of
+  // the sums (a doubtful starter's backup has already taken his volume).
+  const qb = dressed.filter((p) => p.pos === "QB").sort((a, b) => (1 - ROLES.outWeight(b)) * (b.proj[id].att?.mean || 0) - (1 - ROLES.outWeight(a)) * (a.proj[id].att?.mean || 0))[0];
+  const qbs = qb ? [qb] : [], rec = dressed.filter((p) => p.pos !== "QB"), avail = [...qbs, ...rec];
+  const plays = (p) => (p === qb ? 1 : 1 - ROLES.outWeight(p));   // chance he suits up
+  const sum = (ps, k) => ps.reduce((a, p) => a + plays(p) * (p.proj[id][k]?.mean || 0), 0);
   const scaleAll = (ps, k, r) => { if (r > 0 && isFinite(r)) for (const p of ps) ROLES.scale(p.proj[id][k], r); };
   const out = { qb: qb?.name || null, rows: {} };
-  // team = the reconciled team total; tl = the team-level line alone; before / listed = the
-  // listed players' sum before and after scaling; others = what unlisted players are expected to add
-  const row = (k, team, tl, before, listed, share) => (out.rows[k] = { team, tl, before, listed, others: Math.max(0, team - listed) });
+  // team = the team total; tl = the team-level line alone; before / listed = the listed players'
+  // sum before and after scaling; others = what players too small to list add
+  const row = (k, team, tl, before, listed) => (out.rows[k] = { team, tl, before, listed, others: Math.max(0, team - listed) });
   // passing: team line, the starter, and what the receivers add up to all count
   for (const [qk, rk, tl] of [["att", "tgt", T.att * TGT_PER_ATT], ["cmp", "rec", T.cmp], ["pyd", "yds", T.pyd]]) {
-    const q = qb?.proj[id][qk]?.mean, rsum = sum(rec, rk);
-    const qline = qk === "att" ? (q ?? tl) * TGT_PER_ATT : q ?? tl;
+    const unit = qk === "att" ? TGT_PER_ATT : 1;
+    const q = qb?.proj[id][qk]?.mean, before = sum(qbs, qk), rsum = sum(rec, rk);
+    const qline = (q ?? tl / unit) * unit;
     const target = RECON_W * tl + (1 - RECON_W) * (0.5 * qline + 0.5 * (rsum > 0 ? rsum / sh[rk] : qline));
-    if (rsum > 0) scaleAll(rec, rk, target * sh[rk] / rsum);
-    const qTarget = qk === "att" ? target / TGT_PER_ATT : target;
-    if (qb && q > 0) ROLES.scale(qb.proj[id][qk], Math.sqrt(qTarget / q));
-    row(qk, qTarget, qk === "att" ? T.att : tl, q ?? 0, qb?.proj[id][qk]?.mean ?? 0);
-    row(rk, target, tl, rsum, sum(rec, rk));
+    if (qb && q > 0) ROLES.scale(qb.proj[id][qk], Math.sqrt(target / unit / q));
+    const thrown = qb && q > 0 ? sum(qbs, qk) : target / unit;   // what the QBs throw
+    if (rsum > 0) scaleAll(rec, rk, thrown * unit * sh[rk] / rsum);
+    row(qk, thrown, tl / unit, before, sum(qbs, qk));
+    row(rk, thrown * unit, tl, rsum, sum(rec, rk));
   }
   // rushing: everyone who runs, QB included
   for (const k of ["car", "ryd"]) {
@@ -745,14 +768,14 @@ function reconcile(g, tm, roster) {
     row(k, target, T[k], s, sum(avail, k));
   }
   // touchdowns: the implied score sets the total, the players set the pass/run split
-  const ptd = qb?.proj[id].ptd?.mean || 0, rtd = sum(avail, "rtd") / sh.rtd;
+  const ptd = sum(qbs, "ptd"), rtd = sum(avail, "rtd") / sh.rtd;
   if (ptd + rtd > 0) {
     const tds = RECON_W * T.tds + (1 - RECON_W) * (ptd + rtd), passTd = tds * ptd / (ptd + rtd), runTd = tds - passTd;
     const rs = sum(rec, "td"), us = sum(avail, "rtd");
-    if (ptd > 0) ROLES.scale(qb.proj[id].ptd, passTd / ptd);
+    if (ptd > 0) scaleAll(qbs, "ptd", passTd / ptd);
     if (rs > 0) scaleAll(rec, "td", passTd * sh.td / rs);
     if (us > 0) scaleAll(avail, "rtd", runTd * sh.rtd / us);
-    row("ptd", passTd, T.tds * ptd / (ptd + rtd), ptd, qb?.proj[id].ptd?.mean ?? 0);
+    row("ptd", passTd, T.tds * ptd / (ptd + rtd), ptd, sum(qbs, "ptd"));
     row("td", passTd, T.tds * ptd / (ptd + rtd), rs, sum(rec, "td"));
     row("rtd", runTd, T.tds - T.tds * ptd / (ptd + rtd), us, sum(avail, "rtd"));
     out.tds = tds; out.tl_tds = T.tds;
@@ -760,6 +783,10 @@ function reconcile(g, tm, roster) {
   out.pts = T.pts;
   (g.recon ||= {})[tm] = out;
 }
+
+// Every identity the page promises, per team: [label, left key, right key, ratio right/left]
+const RECON_CHECKS = [["Passing yards = receiving yards", "pyd", "yds", 1], ["Completions = receptions", "cmp", "rec", 1],
+  ["Passing TDs = receiving TDs", "ptd", "td", 1], ["Targets = 95.5% of pass attempts", "att", "tgt", TGT_PER_ATT]];
 
 // How the players add up to each team's line (Lines & matchup tab)
 function renderTeamTotals(g) {
@@ -773,18 +800,23 @@ function renderTeamTotals(g) {
   const side = (tm) => {
     const r = R[tm];
     if (!r) return "";
+    const checks = RECON_CHECKS.filter(([, a, b]) => r.rows[a] && r.rows[b]).map(([label, a, b, ratio, dec = STATS[a].dec]) => {
+      const L = r.rows[a].team * ratio, Rt = r.rows[b].team, ok = Math.abs(L - Rt) <= Math.max(0.01, 0.001 * Math.abs(L));
+      return `<tr><td>${label}</td><td colspan="4" class="muted small">${fmt(r.rows[a].team, dec)} ${STATS[a].short.toLowerCase()}${ratio !== 1 ? ` × ${ratio}` : ""} vs ${fmt(Rt, dec)} ${STATS[b].short.toLowerCase()}</td><td>${ok ? "✓" : "✗"}</td></tr>`;
+    }).join("");
     return `<div><h3><img src="${logo(tm)}" alt="" class="tiny-logo"> ${esc(DATA.team_names[tm])}</h3>
       <div class="table-wrap"><table class="tt">
-        <thead><tr><th>Stat</th><th title="Team stats alone: pace, pass rate, matchup, implied score">Team line</th><th title="What the listed players added up to before reconciling">Players, raw</th><th title="The listed players now (what every prop on the page uses)">Players</th><th title="Expected from players too small to list, or from backup QBs">Rest</th><th>Team total</th></tr></thead>
+        <thead><tr><th>Stat</th><th title="Team stats alone: pace, pass rate, matchup, implied score">Team line</th><th title="What the listed players added up to before reconciling">Players, raw</th><th title="The listed players now (what every prop on the page uses)">Named players</th><th title="Players too small to list (about 1-2% of a team's catches and carries)">Other players</th><th>Team total</th></tr></thead>
         <tbody>${ROWS.map(([grp, rows]) => `<tr class="grp-row"><td colspan="6">${grp}</td></tr>` + rows.filter(([k]) => r.rows[k]).map(([k, label, dec]) => {
           const x = r.rows[k];
           return `<tr><td>${label}</td><td>${fmt(x.tl, dec)}</td><td class="muted">${fmt(x.before, dec)}</td><td><b>${fmt(x.listed, dec)}</b></td><td class="muted">${fmt(x.others, dec)}</td><td><b>${fmt(x.team, dec)}</b></td></tr>`;
         }).join("")).join("")}
         ${r.tds != null ? `<tr class="grp-row"><td colspan="6">Scoring</td></tr><tr><td>Offensive TDs</td><td>${fmt(r.tl_tds, 2)}</td><td colspan="3" class="muted small">from ${fmt(r.pts, 1)} implied points</td><td><b>${fmt(r.tds, 2)}</b></td></tr>` : ""}
+        ${checks ? `<tr class="grp-row"><td colspan="6">Adds up</td></tr>${checks}` : ""}
         </tbody></table></div>
-      ${r.qb ? `<div class="muted small">Passing is ${esc(r.qb)}'s line; the receivers' column adds up to the team's passing total.</div>` : ""}</div>`;
+      ${r.qb ? `<div class="muted small">Passing is ${esc(r.qb)}'s line; receivers, named and other, catch exactly what he throws.</div>` : ""}</div>`;
   };
-  el.innerHTML = `<div class="panel-head"><h2>How the players add up</h2><span class="muted small">Every player prop on this page is scaled so each team's players add up to one team line: half from team stats (pace, pass rate, matchup, the score the betting line implies), half from the players' own projections. "Rest" is what players too small to list usually add.</span></div>
+  el.innerHTML = `<div class="panel-head"><h2>How the players add up</h2><span class="muted small">Every player prop on this page is scaled so each team's players add up to one team line: half from team stats (pace, pass rate, matchup, the score the betting line implies), half from the players' own projections. Passing yards equal receiving yards, completions equal receptions, and passing TDs equal receiving TDs. "Other players" is what players too small to list usually add.</span></div>
     <div class="grid2">${side(g.away)}${side(g.home)}</div>`;
 }
 
