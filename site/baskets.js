@@ -7,8 +7,8 @@
 //    a leg costs what you'd pay to buy it now (the ask), not the midpoint.
 // 2. Simulate the game a few thousand times so legs that move together really do move
 //    together, with weights fitted to past seasons (see simulate()).
-// 3. Show the mispriced single bets (the model's fair price beats Polymarket's), the pairs that
-//    pull apart or move together (pairs.js), and lottery tickets. locks.js reuses the legs, the
+// 3. Show the mispriced single bets (the model's fair price beats Polymarket's), the negative
+//    correlation multipliers (pairs that pull apart, pairs.js), and lottery tickets. locks.js reuses the legs, the
 //    simulation, and the storylines below to build the cross-game Lock combos.
 //
 // Each page passes an adapter with its sport's rules (see basketAdapter in app.js and nba.js).
@@ -601,7 +601,7 @@ const BASKETS = (() => {
     // each leg's adjusted chance (vet.js): a basket's expected return is judged on that, not the raw model
     if (priced) for (const l of legs) l.pa = VET.adjusted(l, { A, g });
     simulate(A, g, legs);
-    // single bets first (the steadiest edge), then pairs that pull apart or move together, then
+    // single bets first (the steadiest edge), then negative correlation multipliers (pairs that pull apart), then
     // the long shots. The storyline baskets were retired (Andrew, 2026-11-04: "the scenarios
     // aren't working well"); stories() stays because the locks use it to keep same-game legs consistent.
     el.innerHTML = head(status, win.open) + underpricedHtml(under, priced) + PAIRS.html(legs, priced) + lotteryHtml(lottery(legs, priced), priced);

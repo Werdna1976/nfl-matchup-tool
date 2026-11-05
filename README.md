@@ -21,10 +21,9 @@ starts out matching your computer's setting and remembers your choice).
     beats Polymarket's, pressure-tested.
 - **Each game** has four tabs:
   - **Bets** (Polymarket, opens on its own): **Mispriced props** (single bets where the model's fair price is at
-    least 3¢ above Polymarket's, graded Verified / Caution / Flagged; flagged bets stay listed with their likely issue named), **Pairs that pull apart** (two props that land
-    together less often than their chances multiplied but still at least 1 game in 8, with the payout a parlay needs
-    to be worth it), **Pairs that move together** (the opposite: value when a parlay pays straight multiplication),
-    and **Lottery tickets** (long shots at 4–30¢ priced at or below their chance). Click any player's bet (or its **Last 10** button) to open a
+    least 3¢ above Polymarket's, graded Verified / Caution / Flagged; flagged bets stay listed with their likely issue named), **Negative correlation multipliers** (two props that land
+    together less often than their chances multiplied but still at least 1 game in 8, both priced at or below fair,
+    with the payout a parlay needs to be worth it and how much more than straight multiplication that is), and **Lottery tickets** (long shots at 4–30¢ priced at or below their chance). Click any player's bet (or its **Last 10** button) to open a
     side panel with his last 10 games: every stat, the bet's stat highlighted, each game marked hit or miss.
   - **Players**: projections with 80% ranges, anytime TD (NFL), the alt-line finder, and best spots. Tap a
     player for game logs, an odds ladder on Polymarket's steps, and a chart.
@@ -111,6 +110,6 @@ cd site && python -m http.server 8000 # open http://localhost:8000
 - `scripts/nba_build.py` downloads NBA data, builds projections, and tests the ranges on past games.
 - `site/` is the web pages (plain HTML, CSS, JavaScript; no build step): `index.html` + `app.js` for NFL,
   `nba.html` + `nba.js` for NBA. Shared by both: `nav.js` (dark/light toggle, game tabs), `baskets.js`
-  (Polymarket pull, simulation, mispriced props, lottery), `pairs.js` (pairs that pull apart / move together),
+  (Polymarket pull, simulation, mispriced props, lottery), `pairs.js` (negative correlation multipliers),
   `trend.js` (the last-10-games side panel), `vet.js` (pressure test), `locks.js`
   (Lock of the week/day), `allprops.js` (Best bets view), `notes.js`, `roles.js`, `result.js`.
