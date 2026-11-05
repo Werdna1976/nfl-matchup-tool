@@ -45,6 +45,9 @@ jobs:
             curl -sfL -o site/data/nba.json "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/data/nba.json" || true
             curl -sfL -o site/data/nba_backtest.json "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/data/nba_backtest.json" || true
           }
+      - name: Stamp script and style links with this commit
+        # so a browser holding yesterday's copy of a script loads the new one after each deploy
+        run: sed -i -E "s/(src=\"[a-z]+\.js|href=\"style\.css)\"/\1?v=${GITHUB_SHA::8}\"/g" site/*.html
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
