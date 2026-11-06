@@ -18,6 +18,30 @@ const STATS = {
   td: { label: "Receiving TDs", short: "Rec TD", sub: "TD", group: "Receiving", dec: 2, count: true },
   rry: { label: "Rush + rec yards", short: "Rush+rec yds", sub: "Rush+rec yds", group: "Total", dec: 0 },
 };
+// Extra game-log columns, shown only in the "Last 10" panel (not modeled)
+const TREND_STATS = {
+  sk: { label: "Times sacked", short: "Sacked", group: "Passing" },
+  pfd: { label: "Passing first downs", short: "Pass 1st", group: "Passing" },
+  p20: { label: "Completions of 20+ yards", short: "20+ cmp", group: "Passing" },
+  pay: { label: "Passing air yards", short: "Pass air", group: "Passing" },
+  rfd: { label: "Rushing first downs", short: "Rush 1st", group: "Rushing" },
+  r10: { label: "Runs of 10+ yards", short: "10+ runs", group: "Rushing" },
+  tsh: { label: "Share of team targets (%)", short: "Tgt %", group: "Receiving" },
+  ray: { label: "Receiving air yards", short: "Rec air", group: "Receiving" },
+  yac: { label: "Yards after catch", short: "YAC", group: "Receiving" },
+  cfd: { label: "Receiving first downs", short: "Rec 1st", group: "Receiving" },
+  c20: { label: "Catches of 20+ yards", short: "20+ rec", group: "Receiving" },
+  fl: { label: "Fumbles lost", short: "Fum lost", group: "Total" },
+  anytd: { label: "Touchdowns (rushing + receiving)", short: "TDs", group: "Total" },
+};
+const trendStat = (k) => TREND_STATS[k] || STATS[k];
+// the panel's columns by position: the full stat line plus the extras, grouped
+const TREND_KEYS = {
+  QB: ["att", "cmp", "pyd", "ptd", "int", "sk", "pfd", "p20", "pay", "car", "ryd", "rtd", "rfd", "r10", "fl"],
+  RB: ["car", "ryd", "rtd", "rfd", "r10", "tgt", "rec", "yds", "td", "tsh", "yac", "cfd", "c20", "rry", "fl"],
+  WR: ["tgt", "rec", "yds", "td", "tsh", "ray", "yac", "cfd", "c20", "car", "ryd", "rtd", "rry", "fl"],
+  TE: ["tgt", "rec", "yds", "td", "tsh", "ray", "yac", "cfd", "c20", "car", "ryd", "rtd", "rry", "fl"],
+};
 // Full stat line for each position: QBs pass and run, backs run and catch, receivers catch and run
 const POS_STATS = {
   QB: ["att", "cmp", "pyd", "ptd", "int", "car", "ryd", "rtd"],
@@ -1270,10 +1294,12 @@ function closeModal() { $("#modal").hidden = true; }
 // The side panel that opens when a player prop is clicked on a Bets list (trend.js)
 TREND.config = {
   player: (pid) => DATA.players[pid],
-  keys: (p) => POS_STATS[p.pos] || [],
-  val: (r, k) => (k === "anytd" ? (r.rtd || 0) + (r.td || 0) : r[k] ?? 0),
-  label: (k) => (k === "anytd" ? "Touchdowns (rushing + receiving)" : STATS[k].label),
-  short: (k) => (k === "anytd" ? "TDs" : STATS[k].short),
+  keys: (p) => TREND_KEYS[p.pos] || POS_STATS[p.pos] || [],
+  // extras an older data file lacks stay missing (shown "–"); the modeled stats count as 0
+  val: (r, k) => (k === "anytd" ? (r.rtd || 0) + (r.td || 0) : TREND_STATS[k] ? r[k] ?? null : r[k] ?? 0),
+  label: (k) => trendStat(k).label,
+  short: (k) => trendStat(k).short,
+  group: (k) => trendStat(k).group,
   when: (r, split) => (split ? [`Wk ${r.w}`, r.opp] : `Wk ${r.w} ${r.opp}`),
   log: (p) => p.log,
   teamLine: (p) => `${DATA.team_names[p.team] || p.team} ${p.pos} · ${p.log.length} games this season${p.inj?.status ? ` · ${p.inj.status}` : ""}`,
