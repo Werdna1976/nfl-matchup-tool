@@ -70,14 +70,22 @@ TAGS = [
              r"expanded role|bigger role|larger role|reduced role|committee|split (?:carries|work)|snap share|usage"),
     ("trade", r"trade|traded|dealt\b|deadline|rumou?r|shopping|on the (?:trading )?block|wants out|request(?:ed|s)? (?:a )?trade|"
               r"acquir|waive[ds]?\b|released|cut by|buyout|free agen|sign(?:s|ed|ing) with|extension|contract (?:talks|dispute|year)"),
-    ("morale", r"suspen|\bfined?\b|arrest|charged|discipline|frustrat|unhappy|upset|disgruntl|hold ?out|hold-in|critici|called out|"
+    ("morale", r"suspen|\bfined?\b|arrest|charged|discipline|frustrat|unhappy|upset (?:with|about|over|by)|disgruntl|hold ?out|hold-in|critici|called out|"
                r"calls out|blast(?:s|ed)|rips?\b|ripped|sound(?:s|ed)? off|lash(?:es|ed)? out|feud|rift|beef|locker room|chemistry|"
-               r"effort|attitude|not happy|tension|sulk|apologi|benched for|meeting|ultimatum|tank|losing streak|skid|morale|"
-               r"motivat|checked out|quit on|drama|confront|argument|heated|walk(?:ed|s)? out|absent|no-show|ejected"),
+               r"effort|attitude|not happy|tension|sulk|apologi|benched for|ultimatum|tanking|morale|motivat|checked out|"
+               r"quit on|\bquit\b|confront|walk(?:ed|s)? out|no-show|ejected|controversy"),
     ("return", r"return(?:s|ing|ed)? (?:to|from|vs\.?|for|tonight|sunday|monday|thursday)|cleared|activated|full practice|"
                r"off the injury report|back (?:in|at) practice|good to go|will play|expected to play|set to play|upgraded"),
 ]
 TAG_RE = [(t, re.compile(p, re.I)) for t, p in TAGS]
+# Facts about health and availability can sit in a story's summary; judgment calls (morale, trade,
+# role) count only from the headline, since previews and recaps mention "streak" or "trade" in passing.
+# RotoWire's summary is the news itself, so all of it counts there.
+FROM_SUMMARY = {"illness", "injury", "rest", "return"}
+# Previews, recaps, highlights, betting and fantasy roundups: name lots of players, say little about one
+NOISE = re.compile(r"how to watch|where to watch|highlights|prediction|\bpicks?\b|\bodds\b|best bets|prop bets|fantasy|"
+                   r"start(?:/| or | 'em)sit|pickups|waiver|rankings|mock draft|what to know|takeaways|grades|winners and losers|"
+                   r"\bvs\.? .*: (?:preview|recap)|stephen a\.|father-son|by the numbers|top performances|\bquiz\b|podcast", re.I)
 SUFFIX = re.compile(r"\s+(jr|sr|ii|iii|iv|v)$")
 
 
@@ -88,8 +96,12 @@ def norm(s):
     return SUFFIX.sub("", s.strip())
 
 
-def tags_for(text):
-    return [t for t, r in TAG_RE if r.search(text)]
+def tags_for(headline, summary="", source=""):
+    out = []
+    for t, r in TAG_RE:
+        if r.search(headline) or ((t in FROM_SUMMARY or source == "RotoWire") and summary and r.search(summary)):
+            out.append(t)
+    return out
 
 
 def strip_html(s):
@@ -143,7 +155,7 @@ def parse_espn(j, source="ESPN"):
     out = []
     for a in j.get("articles", []):
         title = a.get("headline") or a.get("title")
-        if not title:
+        if not title or a.get("type") == "Media":   # video clips and highlights
             continue
         when = a.get("published") or a.get("lastModified")
         try:
@@ -234,13 +246,15 @@ def match(items, players, team_names):
         nick[ab] = re.compile(r"\b(" + re.escape(full) + "|" + re.escape(parts[-1]) + r")\b", re.I)
     out_p, out_t = {}, {}
     for it in items:
-        text = f"{it['h']} {it.get('x', '')}"
-        it["g"] = tags_for(text)
-        hit = {by_espn[i] for i in it.get("ids", []) if i in by_espn}
+        if NOISE.search(it["h"]):
+            continue
+        it["g"] = tags_for(it["h"], it.get("x", ""), it.get("s", ""))
+        ids = it.get("ids", [])
+        hit = {by_espn[i] for i in ids if i in by_espn} if len(ids) <= 3 else set()   # roundups tag many
         if pat:
             # a name in the headline counts; in the summary only if ESPN tagged nobody
             found = set(pat.findall(norm(it["h"])))
-            if not hit:
+            if not hit and len(ids) <= 3:
                 found |= set(pat.findall(norm(it.get("x", ""))))
             for n in found:
                 if len(names[n]) == 1:   # two site players with one name: can't tell which

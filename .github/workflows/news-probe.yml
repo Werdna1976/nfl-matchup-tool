@@ -33,7 +33,7 @@ jobs:
                       for t in it.get("g", []) or ["none"]:
                           tags[t] = tags.get(t, 0) + 1
               print(sport, "players with news:", len(P), "teams:", len(T), "tags:", tags)
-              for pid, items in list(P.items())[:12]:
+              for pid, items in sorted(P.items(), key=lambda kv: -len([i for i in kv[1] if i.get("g")]))[:25]:
                   for it in items[:2]:
                       print("  ", pid, it["s"], it.get("g"), it["h"][:110])
               for ab, items in list(T.items())[:6]:

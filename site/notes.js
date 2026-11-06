@@ -52,13 +52,16 @@ const NOTES = (() => {
     ["rest", /load management|maintenance|minutes (?:limit|restriction|cap)|snap (?:count|limit)|pitch count|workload|\bresting\b|will rest|to rest\b|rest (?:day|night)|back-to-back|second night/i],
     ["role", /bench(?:ed)?\b|demot|promot|depth chart|named (?:the )?starter|will start|to start\b|starting (?:lineup|role|job|nod)|first-team|second-team|lose (?:his|the) (?:job|role|spot)|rotation|coming off the bench|move(?:d|s)? to the bench|expanded role|bigger role|larger role|reduced role|committee|split (?:carries|work)|snap share|usage/i],
     ["trade", /trade|traded|dealt\b|deadline|rumou?r|shopping|on the (?:trading )?block|wants out|request(?:ed|s)? (?:a )?trade|acquir|waive[ds]?\b|released|cut by|buyout|free agen|sign(?:s|ed|ing) with|extension|contract (?:talks|dispute|year)/i],
-    ["morale", /suspen|\bfined?\b|arrest|charged|discipline|frustrat|unhappy|upset|disgruntl|hold ?out|hold-in|critici|called out|calls out|blast(?:s|ed)|rips?\b|ripped|sound(?:s|ed)? off|lash(?:es|ed)? out|feud|rift|beef|locker room|chemistry|effort|attitude|not happy|tension|sulk|apologi|benched for|meeting|ultimatum|tank|losing streak|skid|morale|motivat|checked out|quit on|drama|confront|argument|heated|walk(?:ed|s)? out|absent|no-show|ejected/i],
+    ["morale", /suspen|\bfined?\b|arrest|charged|discipline|frustrat|unhappy|upset (?:with|about|over|by)|disgruntl|hold ?out|hold-in|critici|called out|calls out|blast(?:s|ed)|rips?\b|ripped|sound(?:s|ed)? off|lash(?:es|ed)? out|feud|rift|beef|locker room|chemistry|effort|attitude|not happy|tension|sulk|apologi|benched for|ultimatum|tanking|morale|motivat|checked out|quit on|\bquit\b|confront|walk(?:ed|s)? out|no-show|ejected|controversy/i],
     ["return", /return(?:s|ing|ed)? (?:to|from|vs\.?|for|tonight|sunday|monday|thursday)|cleared|activated|full practice|off the injury report|back (?:in|at) practice|good to go|will play|expected to play|set to play|upgraded/i],
   ];
   const TAG_LABEL = { illness: "Illness", injury: "Injury", rest: "Rest", role: "Role", trade: "Trade/contract", morale: "Morale/discipline", return: "Returning" };
   // tags that can mean he plays less or worse; "role" and "return" can cut either way
   const RISKY = new Set(["illness", "injury", "rest", "trade", "morale"]);
-  const tagsFor = (text) => TAGS.filter(([, r]) => r.test(text)).map(([t]) => t);
+  // health facts can come from the summary; morale, trade, and role only from the headline
+  const FROM_SUMMARY = new Set(["illness", "injury", "rest", "return"]);
+  const tagsFor = (head, summary = "") => TAGS.filter(([t, r]) => r.test(head) || (FROM_SUMMARY.has(t) && r.test(summary))).map(([t]) => t);
+  const NOISE = /how to watch|where to watch|highlights|prediction|\bpicks?\b|\bodds\b|best bets|prop bets|fantasy|start(?:\/| or | 'em)sit|pickups|waiver|rankings|mock draft|what to know|takeaways|grades|winners and losers|stephen a\.|father-son|by the numbers|top performances|\bquiz\b|podcast/i;
 
   // Live ESPN headlines (read by the browser), indexed by the player names they're tagged with
   let NEWS = {};
@@ -67,9 +70,10 @@ const NOTES = (() => {
     const out = {}, cutoff = Date.now() - 4 * 864e5;
     for (const a of j.articles || []) {
       const when = new Date(a.published || a.lastModified || 0).getTime();
-      if (when < cutoff) continue;
+      const athletes = (a.categories || []).filter((c) => c.type === "athlete");
+      if (when < cutoff || a.type === "Media" || athletes.length > 3 || NOISE.test(a.headline || a.title || "")) continue;
       const item = { headline: a.headline || a.title, text: a.description || "", when, href: a.links?.web?.href || null, src: "ESPN" };
-      item.tags = tagsFor(`${item.headline} ${item.text}`);
+      item.tags = tagsFor(item.headline, item.text);
       for (const c of a.categories || []) {
         if (c.type === "athlete" && c.description) (out[norm(c.description)] ||= []).push(item);
       }
@@ -90,7 +94,7 @@ const NOTES = (() => {
     FILE_INFO = { updated: j.updated, sources: j.sources || {} };
     return Object.keys(FILE.players || {}).length;
   }
-  const fromFile = (it) => ({ headline: it.h, text: it.x || "", when: (it.t || 0) * 1000, href: it.u || null, src: it.s || "", tags: it.g || tagsFor(`${it.h} ${it.x || ""}`) });
+  const fromFile = (it) => ({ headline: it.h, text: it.x || "", when: (it.t || 0) * 1000, href: it.u || null, src: it.s || "", tags: it.g || tagsFor(it.h, it.x || "") });
   function dedupe(items) {
     const seen = new Set();
     return items.sort((a, b) => b.when - a.when).filter((n) => { const k = norm(n.headline).slice(0, 80); if (seen.has(k)) return false; seen.add(k); return true; });
