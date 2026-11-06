@@ -104,7 +104,7 @@ Polymarket prices are pulled on game day (NBA), from the day before (NFL), or an
 | NBA lines, injury report, last night's box scores | ESPN public API | No |
 | Live injury report and headlines for player notes (both sports) | ESPN public API, read by your browser | No |
 | NFL snap counts (snap-share trend) | [nflverse](https://github.com/nflverse/nflverse-data) (from Pro Football Reference) | No |
-| Player and team news, tagged by topic | ESPN team news feeds, RotoWire, CBS Sports, Yahoo, ProFootballTalk (NFL), HoopsHype (NBA), read on each refresh | No |
+| Player and team news, tagged by topic | ESPN team news feeds, RotoWire, CBS Sports, Yahoo, ProFootballTalk (NFL), read on each refresh | No |
 
 A GitHub Action rebuilds the data every hour and republishes the site. While a page is open it
 re-checks lines, the ESPN injury report, and headlines every 10 minutes. Each time the page

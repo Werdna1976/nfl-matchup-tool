@@ -7,7 +7,7 @@ needs no key; any that fails is skipped (and named in the file), so the site nev
   RotoWire RSS      short player updates: practice reports, illness, role, rest
   CBS Sports, Yahoo league headlines
   ProFootballTalk   NFL rumors, discipline, contract and locker-room stories
-  HoopsHype         NBA trade and locker-room rumors
+(HoopsHype's NBA rumor feed answers "402 Payment Required" to automated readers, so it's left out.)
 
 Each story is matched to the players on the site (by ESPN id where ESPN tags it, otherwise by
 full name in the headline or summary), tagged by what it is about (injury, illness, rest, role,
@@ -51,7 +51,6 @@ RSS = {
             ("CBS Sports", "https://www.cbssports.com/rss/headlines/nfl/"),
             ("Yahoo", "https://sports.yahoo.com/nfl/rss/")],
     "nba": [("RotoWire", "https://www.rotowire.com/rss/news.php?sport=NBA"),
-            ("HoopsHype", "https://hoopshype.com/feed/"),
             ("CBS Sports", "https://www.cbssports.com/rss/headlines/nba/"),
             ("Yahoo", "https://sports.yahoo.com/nba/rss/")],
 }
@@ -72,7 +71,7 @@ TAGS = [
               r"acquir|waive[ds]?\b|released|cut by|buyout|free agen|sign(?:s|ed|ing) with|extension|contract (?:talks|dispute|year)"),
     ("morale", r"suspen|\bfined?\b|arrest|charged|discipline|frustrat|unhappy|upset (?:with|about|over|by)|disgruntl|hold ?out|hold-in|critici|called out|"
                r"calls out|blast(?:s|ed)|rips?\b|ripped|sound(?:s|ed)? off|lash(?:es|ed)? out|feud|rift|beef|locker room|chemistry|"
-               r"effort|attitude|not happy|tension|sulk|apologi|benched for|ultimatum|tanking|morale|motivat|checked out|"
+               r"effort|attitude|not happy|\btension|sulk|apologi|benched for|ultimatum|tanking|morale|motivat|checked out|"
                r"quit on|\bquit\b|confront|walk(?:ed|s)? out|no-show|ejected|controversy"),
     ("return", r"return(?:s|ing|ed)? (?:to|from|vs\.?|for|tonight|sunday|monday|thursday)|cleared|activated|full practice|"
                r"off the injury report|back (?:in|at) practice|good to go|will play|expected to play|set to play|upgraded"),
@@ -96,7 +95,12 @@ def norm(s):
     return SUFFIX.sub("", s.strip())
 
 
+SCORE = re.compile(r"\b\d{2,3}-\d{2,3}\b")
+
+
 def tags_for(headline, summary="", source=""):
+    if SCORE.search(headline):   # a game recap: its summary is about the game, not one player's health
+        summary = ""
     out = []
     for t, r in TAG_RE:
         if r.search(headline) or ((t in FROM_SUMMARY or source == "RotoWire") and summary and r.search(summary)):

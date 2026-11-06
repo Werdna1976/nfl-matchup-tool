@@ -52,7 +52,7 @@ const NOTES = (() => {
     ["rest", /load management|maintenance|minutes (?:limit|restriction|cap)|snap (?:count|limit)|pitch count|workload|\bresting\b|will rest|to rest\b|rest (?:day|night)|back-to-back|second night/i],
     ["role", /bench(?:ed)?\b|demot|promot|depth chart|named (?:the )?starter|will start|to start\b|starting (?:lineup|role|job|nod)|first-team|second-team|lose (?:his|the) (?:job|role|spot)|rotation|coming off the bench|move(?:d|s)? to the bench|expanded role|bigger role|larger role|reduced role|committee|split (?:carries|work)|snap share|usage/i],
     ["trade", /trade|traded|dealt\b|deadline|rumou?r|shopping|on the (?:trading )?block|wants out|request(?:ed|s)? (?:a )?trade|acquir|waive[ds]?\b|released|cut by|buyout|free agen|sign(?:s|ed|ing) with|extension|contract (?:talks|dispute|year)/i],
-    ["morale", /suspen|\bfined?\b|arrest|charged|discipline|frustrat|unhappy|upset (?:with|about|over|by)|disgruntl|hold ?out|hold-in|critici|called out|calls out|blast(?:s|ed)|rips?\b|ripped|sound(?:s|ed)? off|lash(?:es|ed)? out|feud|rift|beef|locker room|chemistry|effort|attitude|not happy|tension|sulk|apologi|benched for|ultimatum|tanking|morale|motivat|checked out|quit on|\bquit\b|confront|walk(?:ed|s)? out|no-show|ejected|controversy/i],
+    ["morale", /suspen|\bfined?\b|arrest|charged|discipline|frustrat|unhappy|upset (?:with|about|over|by)|disgruntl|hold ?out|hold-in|critici|called out|calls out|blast(?:s|ed)|rips?\b|ripped|sound(?:s|ed)? off|lash(?:es|ed)? out|feud|rift|beef|locker room|chemistry|effort|attitude|not happy|\btension|sulk|apologi|benched for|ultimatum|tanking|morale|motivat|checked out|quit on|\bquit\b|confront|walk(?:ed|s)? out|no-show|ejected|controversy/i],
     ["return", /return(?:s|ing|ed)? (?:to|from|vs\.?|for|tonight|sunday|monday|thursday)|cleared|activated|full practice|off the injury report|back (?:in|at) practice|good to go|will play|expected to play|set to play|upgraded/i],
   ];
   const TAG_LABEL = { illness: "Illness", injury: "Injury", rest: "Rest", role: "Role", trade: "Trade/contract", morale: "Morale/discipline", return: "Returning" };
@@ -60,7 +60,7 @@ const NOTES = (() => {
   const RISKY = new Set(["illness", "injury", "rest", "trade", "morale"]);
   // health facts can come from the summary; morale, trade, and role only from the headline
   const FROM_SUMMARY = new Set(["illness", "injury", "rest", "return"]);
-  const tagsFor = (head, summary = "") => TAGS.filter(([t, r]) => r.test(head) || (FROM_SUMMARY.has(t) && r.test(summary))).map(([t]) => t);
+  const tagsFor = (head, summary = "") => (summary = /\b\d{2,3}-\d{2,3}\b/.test(head) ? "" : summary, TAGS.filter(([t, r]) => r.test(head) || (FROM_SUMMARY.has(t) && r.test(summary))).map(([t]) => t));
   const NOISE = /how to watch|where to watch|highlights|prediction|\bpicks?\b|\bodds\b|best bets|prop bets|fantasy|start(?:\/| or | 'em)sit|pickups|waiver|rankings|mock draft|what to know|takeaways|grades|winners and losers|stephen a\.|father-son|by the numbers|top performances|\bquiz\b|podcast/i;
 
   // Live ESPN headlines (read by the browser), indexed by the player names they're tagged with
@@ -83,7 +83,7 @@ const NOTES = (() => {
   }
 
   // Stories gathered on each scheduled refresh (scripts/news_build.py): ESPN team feeds, RotoWire,
-  // CBS, Yahoo, ProFootballTalk / HoopsHype. Filed by player id, plus team stories about morale
+  // CBS, Yahoo, ProFootballTalk. Filed by player id, plus team stories about morale
   // and trades. 7 days kept.
   let FILE = { players: {}, teams: {} }, FILE_INFO = null;
   async function stories(key) {
@@ -148,7 +148,7 @@ const NOTES = (() => {
     // team-wide notes stay on top, then players with the strongest signals
     rows = rows.filter((r) => r.notes.length).sort((a, b) => (b.tag === "team") - (a.tag === "team") || score(b.notes) - score(a.notes));
     el.innerHTML = `
-      <div class="panel-head"><h2>Player notes</h2><span class="muted small">▲ good spot · ▼ tough spot · ! injury or minutes risk. Built from the model, recent games, ESPN's injury report, and player news (ESPN, RotoWire, CBS, Yahoo, rumor sites) tagged by topic. News tags are keyword-based and not in the projections: read the story.</span></div>
+      <div class="panel-head"><h2>Player notes</h2><span class="muted small">▲ good spot · ▼ tough spot · ! injury or minutes risk. Built from the model, recent games, ESPN's injury report, and player news (ESPN, RotoWire, CBS, Yahoo, ProFootballTalk) tagged by topic. News tags are keyword-based and not in the projections: read the story.</span></div>
       ${rows.length ? `<div class="notes-list">${rows.map((r) => `
         <div class="note-row${r.pid ? "" : " team"}" data-pid="${r.pid || ""}">
           <div class="note-who"><span class="pname">${esc(r.name)}</span><span class="pos-tag">${esc(r.tag)}</span></div>
