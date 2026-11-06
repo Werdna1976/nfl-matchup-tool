@@ -651,6 +651,33 @@ def eligible(team_dates, idx_cur, tm, before):
     return out
 
 
+# ---------------------------------------------------------------- form trend
+
+# A trend needs volume to mean anything: below these last-12 averages it is left out.
+TREND_FLOOR = {"min": 12, "pts": 8, "reb": 3, "ast": 2, "fg3": 1, "pra": 12, "pr": 10, "pa": 10, "ra": 5}
+
+
+def form_trend(vals, floor=1.0):
+    """(last-4 average / last-12 average) - 1, or None with fewer than 8 games or too little volume."""
+    vals = vals[-12:]
+    if len(vals) < 8:
+        return None
+    long = sum(vals) / len(vals)
+    if long < floor or long <= 0:
+        return None
+    return sum(vals[-4:]) / 4 / long - 1
+
+
+def rest_info(days, date):
+    """{days: since the team's last game (1 = back-to-back), g4: games in the 4 nights ending
+    with this one} from the set of dates it plays."""
+    d0 = dt.date.fromisoformat(date)
+    before = [dt.date.fromisoformat(d) for d in days if d < date]
+    out = {"days": (d0 - max(before)).days if before else None}
+    out["g4"] = 1 + sum(1 for d in before if (d0 - d).days <= 3)
+    return out
+
+
 # ---------------------------------------------------------------- backtest
 
 FIT_TEAM = True
@@ -707,12 +734,15 @@ def backtest(box_by_season, seasons, priors_by_season, every=3, min_day=14):
                         if a is None:
                             continue
                         hist = idx_cur[pid]
+                        seq = (idx_prev.get(pid, []) + hist)[-12:]   # last 12 games, across seasons
+                        mt = form_trend([x["min"] for x in seq], 12)
                         for k, p in proj.items():
                             act = a[k] if k in a else sum(a[c] for c in COMBOS[k])
-                            base = [x[k] if k in x else sum(x[c] for c in COMBOS[k]) for x in hist]
+                            val = lambda x: x[k] if k in x else sum(x[c] for c in COMBOS[k])  # noqa: E731
+                            base = [val(x) for x in hist]
                             rows.append((S, D, k, act, p["mean"], p["sd"], p["dist"] != "gamma",
-                                         sum(base) / len(base)))
-    return pd.DataFrame(rows, columns=["season", "date", "stat", "actual", "mean", "sd", "discrete", "season_avg"])
+                                         sum(base) / len(base), form_trend([val(x) for x in seq], TREND_FLOOR.get(k, 1)), mt))
+    return pd.DataFrame(rows, columns=["season", "date", "stat", "actual", "mean", "sd", "discrete", "season_avg", "trend", "min_trend"])
 
 
 def _inside(df, mult, lo, hi):
@@ -875,6 +905,17 @@ def build(today, run_backtest=True):
     team_dates = {t: sorted(g.date.unique()) for t, g in box.groupby("tm")}
     info = (pd.concat([prev_box, box]).sort_values("date").groupby("pid").last()[["name", "pos", "img", "tm"]])
 
+    # every date each team plays (played, scheduled, or on ESPN's board), for rest and back-to-backs
+    team_days = {}
+    for d, tms in ((r.date, (r.home, r.away)) for r in sched.itertuples()):
+        for t in tms:
+            team_days.setdefault(t, set()).add(d)
+    for t, ds in team_dates.items():
+        team_days.setdefault(t, set()).update(ds)
+    for g in up.values():
+        for t in (g["home"], g["away"]):
+            team_days.setdefault(t, set()).add(g["date"])
+
     games, used, proj, roles = [], set(), {}, {}
     for gid, g in sorted(up.items(), key=lambda kv: (kv[1]["date"], kv[1]["t"], kv[0])):
         if g["date"] not in dates:
@@ -887,7 +928,8 @@ def build(today, run_backtest=True):
         gm = game_model(home, away, ctx, spread, total)
         game = {"id": gid, "date": g["date"], "t": g["t"], "home": home, "away": away, "spread": spread,
                 "total": total, "line_src": src, "home_ml": hml, "away_ml": aml, "model": gm, "script": {},
-                "team_model": {}, "players": {home: [], away: []}, "bench_min": {}}
+                "team_model": {}, "players": {home: [], away: []}, "bench_min": {},
+                "rest": {tm: rest_info(team_days.get(tm, set()), g["date"]) for tm in (home, away)}}
         if gid in final:
             game["final"] = True
             game["home_score"], game["away_score"] = final[gid]

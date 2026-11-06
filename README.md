@@ -29,7 +29,8 @@ starts out matching your computer's setting and remembers your choice).
     player for game logs, an odds ladder on Polymarket's steps, and a chart.
   - **Lines & matchup**: total and spread sliders, **How the players add up** (each team's line next to what its
     players add up to), matchup strength.
-  - **Notes & injuries**: injury report, hot and cold streaks, teammates out, ESPN headlines.
+  - **Notes & injuries**: injury report, snap-share and minutes changes, hot and cold streaks (context only), rest
+    (short weeks, byes, back-to-backs, 3 games in 4 nights), teammates out, and tagged player and team news.
 - **Parlay slip** (header): add legs, type Polymarket prices, compare with the model.
 - **How the model works** (footer link): the method and its track record.
 
@@ -43,6 +44,26 @@ bets), injuries and practice notes, ESPN headlines from the last 4 days, questio
 24-hour price move, and edges too big to be real. The **adjusted chance** blends the calibrated model 50/50
 with Polymarket's midpoint (plus the sportsbook line for game bets); Verified needs 3¢ of edge on that.
 Basket and lock returns are judged on adjusted chances too, not the raw model.
+
+### Trends and news
+
+**What recent form is worth.** `scripts/trend_study.py` replays 2024-26 and asks whether a player's last 4 games
+vs. his last 12 predict how he does against the model. Streaks in a stat itself don't: NFL players up 25%+ landed
+above the model's median 51% of the time, down 25%+ 48%, and NBA hot scorers averaged 5% *under* the model (hot
+3-point shooters 11% under). The model already leans on recent games, so the site shows streaks as context, not
+as good or bad spots. **NFL snap share does** carry over: players whose snap share was down 25%+ landed above the
+median only 40% of the time and averaged 16% under; up 25%+, 57% and 7% over. NFL projections now move with it
+(3.5% per 10% drop, 2% per 10% rise, capped at -14% / +8%; fitted on 2024-25), which cut the average miss about
+1% on the players it touches in all three seasons. NBA minutes trends matter a little (about 55% vs 44% above the
+median on rebounds and assists) and are shown, not modeled.
+
+**News.** Each refresh reads free feeds, matches stories to the site's players (ESPN's own player tags, otherwise
+the full name), and tags them injury, illness, rest, role, trade/contract, morale/discipline, or returning. Team
+stories about morale or trades go under the team. Stories are kept 7 days and appear as notes, in the Last 10
+panel, and in the pressure test (health news on an over is a flag). The tags are keyword rules, not a reading of
+the story, and there is no archive of old feeds to test them on, so none of it is in the projections. Message
+boards (Reddit, X) aren't included: they need paid keys and are mostly noise. The market reacts to real news
+within minutes, faster than an hourly refresh, so news is most useful as a reason to double-check a cheap price.
 
 ### Models
 
@@ -82,6 +103,8 @@ Polymarket prices are pulled on game day (NBA), from the day before (NFL), or an
 | NBA box scores, schedule | [sportsdataverse](https://github.com/sportsdataverse/sportsdataverse-data) (ESPN data, updated daily) | No |
 | NBA lines, injury report, last night's box scores | ESPN public API | No |
 | Live injury report and headlines for player notes (both sports) | ESPN public API, read by your browser | No |
+| NFL snap counts (snap-share trend) | [nflverse](https://github.com/nflverse/nflverse-data) (from Pro Football Reference) | No |
+| Player and team news, tagged by topic | ESPN team news feeds, RotoWire, CBS Sports, Yahoo, ProFootballTalk (NFL), read on each refresh | No |
 
 A GitHub Action rebuilds the data every hour and republishes the site. While a page is open it
 re-checks lines, the ESPN injury report, and headlines every 10 minutes. Each time the page
@@ -107,6 +130,8 @@ cd site && python -m http.server 8000 # open http://localhost:8000
 - `scripts/build_data.py` downloads data and builds projections.
 - `scripts/model.py` holds the probability math (mirrored in `site/app.js`).
 - `scripts/backtest.py` replays past weeks to check the ranges and tunes their width.
+- `scripts/news_build.py` collects player news on each refresh and writes `site/data/news.json`.
+- `scripts/trend_study.py` measures whether last-4 vs last-12 trends beat the model (run by hand).
 - `scripts/nba_build.py` downloads NBA data, builds projections, and tests the ranges on past games.
 - `site/` is the web pages (plain HTML, CSS, JavaScript; no build step): `index.html` + `app.js` for NFL,
   `nba.html` + `nba.js` for NBA. Shared by both: `nav.js` (dark/light toggle, game tabs), `baskets.js`

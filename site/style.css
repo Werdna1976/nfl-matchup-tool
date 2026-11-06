@@ -358,6 +358,16 @@ table.tt tr.grp-row td { text-align: left; font-weight: 600; color: var(--muted)
 .trend-head h2 { margin: 0; }
 .trend-head .x { margin-left: auto; font-size: 22px; background: none; border: 0; color: var(--text); cursor: pointer; }
 .trend-prop { background: var(--panel-2); border-radius: 10px; padding: 8px 10px; margin-bottom: 8px; }
+.trend-form { margin-bottom: 6px; }
+.form-t { border-collapse: collapse; font-size: 13px; margin: 2px 0 6px; width: auto; }
+.form-t th, .form-t td { padding: 3px 10px 3px 0; text-align: right; white-space: nowrap; }
+.form-t th:first-child, .form-t td:first-child, .form-t td:last-child { text-align: left; }
+.form-t tr.hl td:first-child { font-weight: 600; }
+.news-list { list-style: none; padding: 0; margin: 4px 0 8px; display: grid; gap: 7px; }
+.news-list li { border-left: 3px solid var(--line); padding-left: 8px; }
+.news-list a { color: inherit; }
+.news-list .tag { display: inline-block; font-size: 11px; padding: 0 6px; margin-right: 5px; border-radius: 5px; border: 1px solid var(--line); background: var(--panel-2); vertical-align: 1px; }
+.news-list .tag.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
 .trend h3 { margin: 14px 0 4px; font-size: 15px; }
 .trend-svg { width: 100%; height: auto; }
 .trend-svg text, .spark text { font-size: 10px; fill: var(--muted); }

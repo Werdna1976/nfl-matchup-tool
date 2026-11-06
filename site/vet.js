@@ -174,11 +174,13 @@ const VET = (() => {
       } else if (/limited|did not|dnp/i.test(inj.practice || "")) {
         add("warn", `Practice: ${inj.practice}${inj.injury ? ` (${inj.injury})` : ""}, though not on the game status report`);
       }
-      const news = (typeof NOTES !== "undefined" ? NOTES.newsFor(pl.name) : []).slice(0, 3);
+      // stories from the last 4 days (ESPN live, plus the refresh's RotoWire/CBS/Yahoo/rumor feeds)
+      const news = (typeof NOTES !== "undefined" ? NOTES.newsFor(pl.name, row.pid) : []).filter((n) => n.when >= Date.now() - 4 * 864e5).slice(0, 3);
       for (const n of news) {
-        const txt = `${n.headline} ${n.text || ""}`;
-        if (HEALTH.test(txt)) add(row.side === "over" ? "bad" : "warn", `Health news: "${n.headline}"`);
-        else if (ROLE.test(txt)) add("warn", `Role news: "${n.headline}"`);
+        const txt = `${n.headline} ${n.text || ""}`, tg = n.tags || [];
+        if (tg.some((t) => t === "injury" || t === "illness" || t === "rest") || HEALTH.test(txt)) add(row.side === "over" ? "bad" : "warn", `Health news: "${n.headline}"`);
+        else if (tg.includes("morale")) add(row.side === "over" ? "warn" : "ok", `Morale or discipline news: "${n.headline}"`);
+        else if (tg.includes("trade") || tg.includes("role") || ROLE.test(txt)) add("warn", `Role or trade news: "${n.headline}"`);
         else add("ok", `Recent news (read it): "${n.headline}"`);
       }
       const gid = g.id, base = p.base?.[gid]?.[row.key]?.mean, now = p.proj?.[gid]?.[row.key]?.mean;
@@ -269,6 +271,8 @@ const VET = (() => {
   // Null when nothing points anywhere: then it may be a real mispricing or something the model can't see.
   const CAUSES = [
     [/^Health news|may sit or leave early/, "injury news"],
+    [/^Morale or discipline news/, "morale or discipline news"],
+    [/^Role or trade news/, "role or trade news"],
     [/^Polymarket (prices him|rates his)/, "Polymarket sees a different role (news or lineup)"],
     [/^Sportsbooks disagree/, "sportsbooks disagree with the model"],
     [/^Price fell/, "money moving against it today"],
@@ -304,7 +308,7 @@ const VET = (() => {
   // best first, by the edge left after the checks
   const sort = (rows) => [...rows].sort((a, b) => (a.vet && b.vet ? b.vet.adj - a.vet.adj : b.edge - a.edge));
 
-  const RULES = `Each bet is checked before it's listed: the model's record on that kind of bet, whether Polymarket's whole line ladder sees the same player the model does, the sportsbook line (game bets), the injury report and practice notes, ESPN headlines from the last 4 days, teammates who are questionable, how far the price moved in the last day, and whether the edge is too big to be real. <b>Verified</b> passes everything with at least ${Math.round(MIN_ADJ * 100)}¢ of edge left after adjusting; <b>Caution</b> has something to read first; <b>Flagged</b> failed a check; it stays in the list with the likely cause named, so you can judge it on the player's stats. "Adj." is the edge after blending the model with Polymarket's own price, which is the number to trust over the raw edge.`;
+  const RULES = `Each bet is checked before it's listed: the model's record on that kind of bet, whether Polymarket's whole line ladder sees the same player the model does, the sportsbook line (game bets), the injury report and practice notes, player news from the last 4 days (ESPN, RotoWire, CBS, Yahoo, and ProFootballTalk, tagged injury, illness, rest, role, trade, or morale), teammates who are questionable, how far the price moved in the last day, and whether the edge is too big to be real. <b>Verified</b> passes everything with at least ${Math.round(MIN_ADJ * 100)}¢ of edge left after adjusting; <b>Caution</b> has something to read first; <b>Flagged</b> failed a check; it stays in the list with the likely cause named, so you can judge it on the player's stats. "Adj." is the edge after blending the model with Polymarket's own price, which is the number to trust over the raw edge.`;
 
   return { grade, issue, adjusted, drift, cell, why, sort, RULES, MIN_ADJ, calibrated, impliedScale };
 })();

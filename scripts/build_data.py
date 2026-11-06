@@ -94,6 +94,48 @@ def load(season):
     return stats, team, sched, inj
 
 
+_IDS = None
+
+
+def player_ids():
+    """gsis_id -> {"pfr": ..., "espn": ...} from nflverse's player table ({} if the download fails).
+    Snap counts are keyed by Pro Football Reference ids and ESPN news by ESPN ids."""
+    global _IDS
+    if _IDS is None:
+        try:
+            t = read_csv(f"{NFLVERSE}/players/players.csv")
+            _IDS = {r.gsis_id: {"pfr": r.pfr_id if isinstance(r.pfr_id, str) else None,
+                                "espn": str(int(r.espn_id)) if not pd.isna(r.espn_id) else None}
+                    for r in t.itertuples() if isinstance(r.gsis_id, str)}
+        except Exception as e:
+            print("player id table unavailable:", e)
+            _IDS = {}
+    return _IDS
+
+
+def load_snaps(season):
+    """{gsis_id: {week: share of the team's offensive snaps}} for one regular season ({} on failure)."""
+    try:
+        s = read_csv(f"{NFLVERSE}/snap_counts/snap_counts_{season}.csv")
+    except Exception as e:
+        print(f"snap counts {season} unavailable:", e)
+        return {}
+    s = s[(s.game_type == "REG") & (s.offense_snaps > 0)]
+    by_pfr = {}
+    for r in s.itertuples():
+        by_pfr.setdefault(r.pfr_player_id, {})[int(r.week)] = float(r.offense_pct)
+    return {gid: by_pfr[x["pfr"]] for gid, x in player_ids().items() if x["pfr"] in by_pfr}
+
+
+def snap_series(snaps, pid, season, before_week):
+    """His offensive snap shares, oldest first: last season, then this season before `before_week`.
+    snaps: (this season, last season) from load_snaps."""
+    cur, prev = snaps
+    old = [v for _, v in sorted(prev.get(pid, {}).items())]
+    new = [v for w, v in sorted(cur.get(pid, {}).items()) if w < before_week]
+    return old + new
+
+
 def load_prev(season):
     """Last season's regular-season player stats (empty if the download fails)."""
     try:
@@ -351,7 +393,28 @@ def _blend(n, ew, prev, k_prev, k0, target):
     return (n * ew + kp * pm + abs(k0) * target) / den if den > 0 else target
 
 
-def project_player(games, pos, opp, teams, lg, gs, cvs, rates, calib=None, prev=None, depth=False):
+# Snap-share trend: a player whose share of offensive snaps over his last 4 games is up (or down)
+# on his last 12 keeps moving that way, and the stats-only average misses it. In 2024-26 backtests
+# (scripts/trend_study.py, 17,000 results) players down 25%+ landed above the model's median 40%
+# of the time and averaged 16% under it; players up 25%+ landed above it 57% and averaged 7% over.
+# Fitted on 2024-25 (a drop carries further than a rise): each 10% of snap trend moves the
+# projection 3.5% down or 2% up, capped at -14% / +8%.
+SNAP_DOWN, SNAP_UP, SNAP_CAP = 0.35, 0.2, 0.4
+
+
+def snap_trend(series):
+    """(last-4 average / last-12 average) - 1 of his snap shares, or None (under 8 games or a
+    last-12 share under 20%: special-teamers and rare fill-ins swing too much to read)."""
+    s = series[-12:]
+    if len(s) < 8:
+        return None
+    long = sum(s) / len(s)
+    if long < 0.2:
+        return None
+    return sum(s[-4:]) / 4 / long - 1
+
+
+def project_player(games, pos, opp, teams, lg, gs, cvs, rates, calib=None, prev=None, depth=False, snap_t=None):
     """games: the player's per-game rows (oldest first). prev: his line from prev_summary().
     depth: a depth player (below the regular cutoffs). The fitted baseline is the average for
     regulars, so pulling him toward it would hand him a starter's share; his own recent games
@@ -366,6 +429,7 @@ def project_player(games, pos, opp, teams, lg, gs, cvs, rates, calib=None, prev=
     n = len(games)
     prev = prev or {}
     share = rush_share(games)
+    sf = 1.0 if snap_t is None else 1 + clip(snap_t, -SNAP_CAP, SNAP_CAP) * (SNAP_UP if snap_t > 0 else SNAP_DOWN)
     for col, kind in POSITION_STATS[pos]:
         vals = [float(v) for v in games[col].fillna(0)]
         base = ewma(vals)
@@ -378,11 +442,11 @@ def project_player(games, pos, opp, teams, lg, gs, cvs, rates, calib=None, prev=
         if kind in COUNT_KINDS:
             target = rates.get((pos, col), 0.0) * raw.get(TD_OPP[col], 0.0)   # 0 for WR/TE rushing TDs
             b = _blend(n, base, prev.get(col), P["k_prev"], P["k0"], target)
-            mean = max(abs(P["c"]) * b * f ** P["g"], 0.005)
+            mean = max(abs(P["c"]) * b * f ** P["g"] * sf, 0.005)
             out[col] = {"mean": round(mean, 3), "sd": round(math.sqrt(mean), 3), "dist": "poisson", "f": round(f, 3)}
             continue
         b = _blend(n, base, prev.get(col), P["k_prev"], P["k0"], base if depth else abs(P["mu"]))
-        mean = max(P["c"] * b * f ** P["g"], 0.05)
+        mean = max(P["c"] * b * f ** P["g"] * sf, 0.05)
         curve = abs(P["a"]) * mean ** (-P["p"])
         m = sum(vals) / n if n else 0.0
         own = ((sum((v - m) ** 2 for v in vals) / (n - 1)) ** 0.5 / m) if n > 1 and m > 0 else curve
@@ -557,6 +621,39 @@ def eligible_players(stats, team, upto_week, depth=False):
     return keep
 
 
+def form_line(pid, games, prev_raw, snaps, season, week, pos):
+    """Last 4 vs. last 12 games (across seasons) for his main stats and snap share, for the page's
+    form notes. Only the snap-share trend moves the projection (see SNAP_DOWN); streaks in the
+    stats themselves are already in the recency-weighted average and backtest as noise."""
+    if pos not in POSITION_STATS:
+        return None
+    old = prev_raw[prev_raw.player_id == pid].sort_values("week") if len(prev_raw) else games.iloc[:0]
+    both = pd.concat([old, games]).tail(12)
+    if len(both) < 6:
+        return None
+    out = {"n": int(len(both)), "l4": {}, "l12": {}}
+    for col, _ in POSITION_STATS[pos]:
+        v = both[col].fillna(0)
+        out["l4"][STAT_KEYS[col]] = round(float(v.tail(4).mean()), 2)
+        out["l12"][STAT_KEYS[col]] = round(float(v.mean()), 2)
+    sn = snap_series(snaps, pid, season, week + 1)[-12:]
+    if len(sn) >= 6:
+        out["snp4"], out["snp12"] = round(100 * sum(sn[-4:]) / 4, 1), round(100 * sum(sn) / len(sn), 1)
+        st = snap_trend(sn)
+        if st is not None:
+            out["st"] = round(st, 3)
+            out["sf"] = round(1 + clip(st, -SNAP_CAP, SNAP_CAP) * (SNAP_UP if st > 0 else SNAP_DOWN), 3)
+    return out
+
+
+def rest_days(sched, team, day):
+    """Days since the team's previous game this season (None in week 1)."""
+    s = sched[((sched.home_team == team) | (sched.away_team == team)) & (sched.gameday < day)]
+    if s.empty:
+        return None
+    return int((pd.Timestamp(day) - pd.Timestamp(s.gameday.max())).days)
+
+
 def build(season):
     stats, team_stats, sched, inj = load(season)
     week = current_week(sched)
@@ -567,7 +664,9 @@ def build(season):
             teams[ab]["record"] = rec
     cvs = prior_cvs(stats, week)
     rates = prior_rates(stats, week)
-    prev = prev_summary(load_prev(season))
+    prev_raw = load_prev(season)
+    prev = prev_summary(prev_raw)
+    snaps = load_snaps(season), load_snaps(season - 1)
     calib = None   # spreads come from model_params.json, fitted on past seasons
 
     inj_latest = {}
@@ -595,10 +694,13 @@ def build(season):
             ts = getattr(r, "target_share", None)
             if ts is not None and not pd.isna(ts):
                 row["tsh"] = int(round(ts * 100))   # share of the team's targets, in percent
+            sp = snaps[0].get(pid, {}).get(int(r.week))
+            if sp is not None:
+                row["snp"] = int(round(sp * 100))   # share of the team's offensive snaps, in percent
             log.append(row)
         players[pid] = {"name": last.player_display_name, "pos": last.position, "team": last.team,
                         "img": last.headshot_url if isinstance(last.headshot_url, str) else None,
-                        "log": log, "proj": {}}
+                        "log": log, "proj": {}, "form": form_line(pid, g, prev_raw, snaps, season, week, last.position)}
         if pid in inj_latest and inj_latest[pid]["wk"] >= week - 1:
             players[pid]["inj"] = inj_latest[pid]
 
@@ -614,6 +716,7 @@ def build(season):
             spread = None if pd.isna(spread) else float(spread)
             total = None if pd.isna(total) else float(total)
             gm = game_model(home, away, teams, lg, spread or 0.0, total)
+            rest = {tm: rest_days(sched, tm, r.gameday) for tm in (home, away)}
             game = {
                 "id": r.game_id, "week": int(w), "day": r.gameday, "time": r.gametime,
                 "home": home, "away": away, "spread": spread, "total": total, "line_src": src,
@@ -621,7 +724,7 @@ def build(season):
                 "away_ml": None if pd.isna(r.away_moneyline) else int(r.away_moneyline),
                 "roof": r.roof, "wind": None if pd.isna(r.wind) else int(r.wind),
                 "temp": None if pd.isna(r.temp) else int(r.temp),
-                "model": gm, "script": {}, "team_model": {}, "share": {},
+                "model": gm, "script": {}, "team_model": {}, "share": {}, "rest": rest,
                 "players": {home: [], away: []},
             }
             if not pd.isna(r.home_score) and not pd.isna(r.away_score):
@@ -637,8 +740,9 @@ def build(season):
                 game["share"][tm] = {k: round(v, 3) for k, v in listed_share(stats, team_stats, tm, listed, week).items()}
                 for pid in listed:
                     pg = stats[(stats.player_id == pid) & (stats.week < w)].sort_values("week")
+                    st = snap_trend(snap_series(snaps, pid, season, w))
                     players[pid]["proj"][r.game_id] = project_player(pg, players[pid]["pos"], opp, teams, lg, gs, cvs, rates, calib,
-                                                                     prev.get(pid), depth=pid not in regular)
+                                                                     prev.get(pid), depth=pid not in regular, snap_t=st)
                     game["players"][tm].append(pid)
             games.append(game)
 
