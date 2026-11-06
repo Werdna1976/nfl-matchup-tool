@@ -27,6 +27,7 @@ const TREND_STATS = {
   rfd: { label: "Rushing first downs", short: "Rush 1st", group: "Rushing" },
   r10: { label: "Runs of 10+ yards", short: "10+ runs", group: "Rushing" },
   tsh: { label: "Share of team targets (%)", short: "Tgt %", group: "Receiving" },
+  snp: { label: "Share of offensive snaps (%)", short: "Snap %", group: "Usage" },
   ray: { label: "Receiving air yards", short: "Rec air", group: "Receiving" },
   yac: { label: "Yards after catch", short: "YAC", group: "Receiving" },
   cfd: { label: "Receiving first downs", short: "Rec 1st", group: "Receiving" },
@@ -37,10 +38,10 @@ const TREND_STATS = {
 const trendStat = (k) => TREND_STATS[k] || STATS[k];
 // the panel's columns by position: the full stat line plus the extras, grouped
 const TREND_KEYS = {
-  QB: ["att", "cmp", "pyd", "ptd", "int", "sk", "pfd", "p20", "pay", "car", "ryd", "rtd", "rfd", "r10", "fl"],
-  RB: ["car", "ryd", "rtd", "rfd", "r10", "tgt", "rec", "yds", "td", "tsh", "yac", "cfd", "c20", "rry", "fl"],
-  WR: ["tgt", "rec", "yds", "td", "tsh", "ray", "yac", "cfd", "c20", "car", "ryd", "rtd", "rry", "fl"],
-  TE: ["tgt", "rec", "yds", "td", "tsh", "ray", "yac", "cfd", "c20", "car", "ryd", "rtd", "rry", "fl"],
+  QB: ["snp", "att", "cmp", "pyd", "ptd", "int", "sk", "pfd", "p20", "pay", "car", "ryd", "rtd", "rfd", "r10", "fl"],
+  RB: ["snp", "car", "ryd", "rtd", "rfd", "r10", "tgt", "rec", "yds", "td", "tsh", "yac", "cfd", "c20", "rry", "fl"],
+  WR: ["snp", "tgt", "rec", "yds", "td", "tsh", "ray", "yac", "cfd", "c20", "car", "ryd", "rtd", "rry", "fl"],
+  TE: ["snp", "tgt", "rec", "yds", "td", "tsh", "ray", "yac", "cfd", "c20", "car", "ryd", "rtd", "rry", "fl"],
 };
 // Full stat line for each position: QBs pass and run, backs run and catch, receivers catch and run
 const POS_STATS = {
@@ -300,6 +301,7 @@ async function refreshInjuries() {
     }
   } catch (e) { /* keep the file's injury report */ }
   try { await NOTES.news("football/nfl"); } catch (e) { /* headlines are optional */ }
+  try { await NOTES.stories("nfl"); } catch (e) { /* the news file is optional */ }
   adjustForInjuries();
 }
 
@@ -325,7 +327,9 @@ function renderMeta() {
 async function loadData() {
   const r = await fetch(`data/data.json?t=${Date.now()}`, { cache: "no-store" });
   if (!r.ok) throw new Error(r.status);
-  return r.json();
+  const d = await r.json();
+  for (const [id, p] of Object.entries(d.players || {})) p.pid = id;   // news is filed by player id
+  return d;
 }
 
 // ---------------------------------------------------------------- boot
@@ -860,11 +864,18 @@ function playerNotes(p, g) {
     if (d.f >= 1.1) out.push({ kind: "good", text: `Good matchup: ${opp} gives up ${name} (+${Math.round((d.f - 1) * 100)}%)` });
     else if (d.f <= 0.9) out.push({ kind: "bad", text: `Tough matchup: ${opp} limits ${name} (−${Math.round((1 - d.f) * 100)}%)` });
   }
-  // hot or cold: last 3 games against the season
-  if (p.log.length >= 5) {
-    const a = avg(p.log.slice(-3).map((r) => r[k])), b = avg(p.log.map((r) => r[k])), min = k === "pyd" ? 40 : 15;
-    if (b >= 15 && a >= 1.3 * b && a - b >= min) out.push({ kind: "good", text: `Hot: ${Math.round(a)} ${name} a game last 3 (season ${Math.round(b)})` });
-    else if (b >= 15 && a <= 0.7 * b && b - a >= min) out.push({ kind: "bad", text: `Cold: ${Math.round(a)} ${name} a game last 3 (season ${Math.round(b)})` });
+  // Snap share, last 4 games vs. last 12: the one trend that has beaten the stats-only average in
+  // backtests, so it is built into the projection (sf); shown here with what it changed
+  const fm = p.form;
+  if (fm?.st != null && Math.abs(fm.st) >= 0.1 && fm.sf) {
+    out.push({ kind: fm.st > 0 ? "good" : "bad", text: `Snaps ${fm.st > 0 ? "up" : "down"}: ${Math.round(fm.snp4)}% of snaps last 4 vs ${Math.round(fm.snp12)}% last 12 (projection ${fm.sf >= 1 ? "+" : "−"}${Math.round(Math.abs(fm.sf - 1) * 100)}%)` });
+  }
+  // Hot or cold in the stat itself, last 4 vs last 12: shown for context only. In 2024-26
+  // backtests a streak like this didn't beat the projection (the model already leans on recent games).
+  if (fm?.l4?.[k] != null && fm.n >= 8) {
+    const a = fm.l4[k], b = fm.l12[k], min = k === "pyd" ? 40 : 15;
+    if (b >= 15 && a >= 1.3 * b && a - b >= min) out.push({ kind: "info", text: `Hot: ${Math.round(a)} ${name} a game last 4 vs ${Math.round(b)} last 12 (already in the projection)` });
+    else if (b >= 15 && a <= 0.7 * b && b - a >= min) out.push({ kind: "info", text: `Cold: ${Math.round(a)} ${name} a game last 4 vs ${Math.round(b)} last 12 (already in the projection)` });
   }
   // teammates ruled out: how this player did in past games without them
   for (const pid of g.players[p.team] || []) {
@@ -885,16 +896,21 @@ function playerNotes(p, g) {
     const b = p.base[g.id];
     out.push({ kind: (dv || dy) > 0 ? "good" : "bad", text: `Projection ${(dv || dy) > 0 ? "up" : "down"} for ${p.why[g.id].join(", ")} out: ${fmt(b[dk].mean, 1)} → ${fmt(pr[dk].mean, 1)} ${STATS[dk].short.toLowerCase()}, ${Math.round(b[MAIN_STAT[p.pos]].mean)} → ${Math.round(pr[MAIN_STAT[p.pos]].mean)} ${STATS[MAIN_STAT[p.pos]].short.toLowerCase()}` });
   }
-  for (const n of NOTES.newsFor(p.name).slice(0, 2)) out.push({ kind: "info", text: `News: ${n.headline}` });
+  out.push(...NOTES.newsChips(NOTES.newsFor(p.name, p.pid), 3));
   return out;
 }
 
-// Notes for a whole team: scoring expectations and weather
+// Notes for a whole team: scoring expectations, weather, rest, and team stories (morale, trades)
 function teamNotes(g, tm) {
   const out = [], pts = tm === g.home ? g.model.home_pts : g.model.away_pts, avgPts = DATA.teams[tm].off.ppg;
   if (pts >= avgPts + 4) out.push({ kind: "good", text: `${tm} implied for ${fmt(pts, 1)} points, above its ${fmt(avgPts, 1)} average: TD chances up` });
   else if (pts <= avgPts - 4) out.push({ kind: "bad", text: `${tm} implied for ${fmt(pts, 1)} points, below its ${fmt(avgPts, 1)} average` });
   if (g.wind != null && g.wind >= 15 && !/dome|closed/i.test(g.roof || "")) out.push({ kind: "bad", text: `Wind ${g.wind} mph: passing and kicking suffer` });
+  // rest: context only, not in the projections
+  const rd = g.rest?.[tm], ro = g.rest?.[tm === g.home ? g.away : g.home];
+  if (rd != null && rd <= 5) out.push({ kind: "warn", text: `Short week: ${rd} days since its last game${ro != null && ro >= 7 ? ` (opponent had ${ro})` : ""}` });
+  else if (rd != null && rd >= 12) out.push({ kind: "info", text: `Off a bye: ${rd} days of rest` });
+  out.push(...NOTES.newsChips(NOTES.teamNews(tm), 2));
   return out;
 }
 
@@ -1305,6 +1321,25 @@ TREND.config = {
   teamLine: (p) => `${DATA.team_names[p.team] || p.team} ${p.pos} · ${p.log.length} games this season${p.inj?.status ? ` · ${p.inj.status}` : ""}`,
   proj: (p, l, k) => (k === "anytd" ? null : p.proj?.[l.gid]?.[k]?.mean ?? null),
   more: (l) => { const g = DATA.games.find((x) => x.id === l.gid); if (g) openPlayer(l.pid, g); },
+  extra: (p, l) => {
+    const fm = p.form || {}, g = DATA.games.find((x) => x.id === l.gid), k = l.key;
+    const l4 = (x) => (x === "anytd" ? (fm.l4?.rtd ?? 0) + (fm.l4?.td ?? 0) : fm.l4?.[x]);
+    const l12 = (x) => (x === "anytd" ? (fm.l12?.rtd ?? 0) + (fm.l12?.td ?? 0) : fm.l12?.[x]);
+    const use = p.pos === "QB" ? "att" : p.pos === "RB" ? "car" : "tgt";
+    const rows = [];
+    if (fm.l4) {
+      rows.push({ label: trendStat(k).label, a: l4(k), b: l12(k), dec: STATS[k]?.dec ?? 1, hl: true });
+      if (use !== k) rows.push({ label: STATS[use].label, a: l4(use), b: l12(use), dec: 1 });
+      if (p.pos === "RB" && k !== "tgt") rows.push({ label: STATS.tgt.label, a: l4("tgt"), b: l12("tgt"), dec: 1 });
+    }
+    if (fm.snp4 != null) rows.push({ label: "Share of offensive snaps", a: fm.snp4, b: fm.snp12, dec: 0, unit: "%",
+      note: fm.sf ? `projection ${fm.sf >= 1 ? "+" : "−"}${Math.round(Math.abs(fm.sf - 1) * 100)}% for this` : "" });
+    const rd = g?.rest?.[p.team];
+    const rest = rd == null ? "" : rd <= 5 ? `Short week: ${rd} days since his team's last game.` : rd >= 12 ? `Off a bye: ${rd} days of rest.` : `${rd} days since his team's last game.`;
+    return TREND.form(rows, fm.n ? `over his last ${fm.n} games, last season included` : "",
+      "A change in snap share has carried into the next game in 2024-26 backtests, so it moves the projection (down 3.5% per 10% drop, up 2% per 10% rise). Streaks in the stat itself haven't beaten the projection, which already leans on recent games.", rest)
+      + `<h3>News, last 7 days</h3>${NOTES.newsList(NOTES.newsFor(p.name, p.pid))}`;
+  },
 };
 
 // ---------------------------------------------------------------- slip

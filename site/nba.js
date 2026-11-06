@@ -248,14 +248,16 @@ let NEWS_STATUS = "";
 async function refreshInjuries() {
   try {
     const { byId, byName, count } = await NOTES.injuries("basketball/nba");
-    if (!count) return;
-    for (const [pid, p] of Object.entries(DATA.players)) {
-      const e = byId[pid] || byName[NOTES.norm(p.name)];
-      if (e) p.inj = e; else delete p.inj;
+    if (count) {
+      for (const [pid, p] of Object.entries(DATA.players)) {
+        const e = byId[pid] || byName[NOTES.norm(p.name)];
+        if (e) p.inj = e; else delete p.inj;
+      }
+      NEWS_STATUS = ` · injury report live as of ${new Date().toLocaleTimeString()}`;
     }
-    NEWS_STATUS = ` · injury report live as of ${new Date().toLocaleTimeString()}`;
   } catch (e) { /* keep the file's injury report */ }
   try { await NOTES.news("basketball/nba"); } catch (e) { /* headlines are optional */ }
+  try { await NOTES.stories("nba"); } catch (e) { /* the news file is optional */ }
   adjustForInjuries();
 }
 
@@ -313,7 +315,9 @@ function renderMeta() {
 async function loadData() {
   const r = await fetch(`data/nba.json?t=${Date.now()}`, { cache: "no-store" });
   if (!r.ok) throw new Error(r.status);
-  return r.json();
+  const d = await r.json();
+  for (const [id, p] of Object.entries(d.players || {})) p.pid = id;   // news is filed by player id
+  return d;
 }
 
 // ---------------------------------------------------------------- boot
@@ -814,14 +818,18 @@ function playerNotes(p, g) {
     out.push({ kind: isOut(p) ? "bad" : "warn", text: `${p.inj.status}${p.inj.injury ? ` (${p.inj.injury})` : ""}${p.inj.note ? `. ${p.inj.note}` : ""}` });
     if (isOut(p)) return out;
   }
-  // hot or cold: last 5 games against this season (or everything logged, early on)
-  const cur = thisSeason(p), base = cur.length >= 8 ? cur : p.log, last = p.log.slice(-5);
-  if (last.length >= 4 && base.length >= 6) {
+  // Last 4 games vs last 12 (last season's games fill in early on). A minutes change has carried
+  // a little into the next game in 2024-26 backtests; hot or cold scoring hasn't (if anything,
+  // hot shooters came back down), so streaks are shown as context, not as good or bad spots.
+  const f = form(p);
+  if (f) {
+    const mt = f.min.b > 0 ? f.min.a / f.min.b - 1 : 0;
+    if (f.min.b >= 12 && Math.abs(mt) >= 0.15) out.push({ kind: "info", text: `Minutes ${mt > 0 ? "up" : "down"}: ${fmt(f.min.a, 1)} a game last 4 vs ${fmt(f.min.b, 1)} last 12` });
     for (const [k, [, unit, minDiff]] of Object.entries(NOTE_STAT)) {
-      const a = avg(last.map((r) => r[k])), b = avg(base.map((r) => r[k]));
+      const a = f[k].a, b = f[k].b;
       if (b < (k === "pts" ? 8 : 1.5)) continue;
-      if (a >= 1.25 * b && a - b >= minDiff) out.push({ kind: "good", text: `Hot: ${fmt(a, 1)} ${unit} last ${last.length} (avg ${fmt(b, 1)})` });
-      else if (a <= 0.75 * b && b - a >= minDiff) out.push({ kind: "bad", text: `Cold: ${fmt(a, 1)} ${unit} last ${last.length} (avg ${fmt(b, 1)})` });
+      if (a >= 1.25 * b && a - b >= minDiff) out.push({ kind: "info", text: `Hot: ${fmt(a, 1)} ${unit} last 4 vs ${fmt(b, 1)} last 12 (streaks haven't carried over)` });
+      else if (a <= 0.75 * b && b - a >= minDiff) out.push({ kind: "info", text: `Cold: ${fmt(a, 1)} ${unit} last 4 vs ${fmt(b, 1)} last 12 (streaks haven't carried over)` });
     }
   }
   // teammates ruled out: show how this player did in past games without them
@@ -835,18 +843,38 @@ function playerNotes(p, g) {
   }
   const up = ROLES.delta(p, g.id, "pts"), upMin = ROLES.delta(p, g.id, "min");
   if (up || upMin) out.push({ kind: up >= 0 && upMin >= 0 ? "good" : "bad", text: `Projection ${up >= 0 ? "up" : "down"} for ${p.why[g.id].join(", ")} out: ${fmt(p.base[g.id].pts.mean, 1)} → ${fmt(pr.pts.mean, 1)} pts, ${fmt(p.base[g.id].min.mean, 0)} → ${fmt(pr.min.mean, 0)} min` });
-  for (const n of NOTES.newsFor(p.name).slice(0, 2)) out.push({ kind: "info", text: `News: ${n.headline}` });
+  out.push(...NOTES.newsChips(NOTES.newsFor(p.name, p.pid), 3));
+  return out;
+}
+
+// Last 4 games vs last 12 for minutes, the main stats, and starts: {min: {a, b}, ..., st: {a, b}}
+const FORM_KEYS = ["min", "pts", "reb", "ast", "fg3", "pra"];
+function form(p) {
+  const rows = p.log.slice(-12);
+  if (rows.length < 8) return null;
+  const val = (r, k) => (k === "pra" ? r.pts + r.reb + r.ast : r[k] ?? 0);
+  const out = { n: rows.length };
+  for (const k of FORM_KEYS) out[k] = { a: avg(rows.slice(-4).map((r) => val(r, k))), b: avg(rows.map((r) => val(r, k))) };
+  out.st = { a: rows.slice(-4).filter((r) => r.s).length, b: rows.filter((r) => r.s).length };
   return out;
 }
 
 // Notes that apply to a whole team: matchup, tired legs, and expected blowouts
 function teamNotes(g, tm) {
   const out = [];
-  const prev = new Date(`${g.date}T12:00:00Z`); prev.setUTCDate(prev.getUTCDate() - 1);
-  const played = (g.players[tm] || []).some((pid) => DATA.players[pid].log.at(-1)?.d === prev.toISOString().slice(0, 10));
-  if (played) out.push({ kind: "warn", text: `${tm} played last night: rest days or lighter minutes possible` });
+  const opp = tm === g.home ? g.away : g.home;
+  // rest, from the schedule (older data files: whether anyone on the roster played yesterday)
+  const R = g.rest?.[tm], RO = g.rest?.[opp];
+  let b2b = R ? R.days === 1 : false;
+  if (!R) {
+    const prev = new Date(`${g.date}T12:00:00Z`); prev.setUTCDate(prev.getUTCDate() - 1);
+    b2b = (g.players[tm] || []).some((pid) => DATA.players[pid].log.at(-1)?.d === prev.toISOString().slice(0, 10));
+  }
+  if (b2b) out.push({ kind: "warn", text: `${tm} played last night: rest days or lighter minutes possible` });
+  if (R?.g4 >= 3) out.push({ kind: "warn", text: `${tm}'s ${R.g4 === 3 ? "3rd" : `${R.g4}th`} game in 4 nights` });
+  if (RO?.days === 1 && !(R?.days === 1)) out.push({ kind: "info", text: `${opp} played last night; ${tm} is ${R?.days != null ? `on ${R.days - 1} day${R.days - 1 === 1 ? "" : "s"} of rest` : "fresher"}` });
   // matchup and pace apply to the whole roster (and are already in every projection)
-  const opp = tm === g.home ? g.away : g.home, sc = g.script[tm], O = DATA.teams[opp];
+  const sc = g.script[tm], O = DATA.teams[opp];
   const f = { pts: sc.pts_f, reb: sc.pace_f * O.f_reb, ast: sc.pace_f * O.f_ast, fg3: sc.pace_f * O.f_fg3 };
   for (const [k, [what]] of Object.entries(NOTE_STAT)) {
     if (f[k] >= 1.05) out.push({ kind: "good", text: `Good ${what} spot vs ${opp} (+${Math.round((f[k] - 1) * 100)}%)` });
@@ -854,6 +882,7 @@ function teamNotes(g, tm) {
   }
   const margin = g.script[tm].margin;
   if (margin > 10) out.push({ kind: "warn", text: `${tm} favored by ${fmt(margin, 0)}: its starters may sit late in a blowout` });
+  out.push(...NOTES.newsChips(NOTES.teamNews(tm), 2));
   return out;
 }
 
@@ -1112,6 +1141,21 @@ TREND.config = {
   teamLine: (p) => `${DATA.team_names[p.team] || p.team} ${p.pos || ""} · ${p.log.filter((r) => !r.ly).length} games this season${p.inj?.status ? ` · ${p.inj.status}` : ""}`,
   proj: (p, l, k) => p.proj?.[l.gid]?.[k]?.mean ?? null,
   more: (l) => { const g = DATA.games.find((x) => x.id === l.gid); if (g) openPlayer(l.pid, g); },
+  extra: (p, l) => {
+    const f = form(p), g = DATA.games.find((x) => x.id === l.gid), k = l.key, rows = [];
+    if (f) {
+      const val = (r, x) => trendVal(r, x) ?? 0;
+      const last = p.log.slice(-12);
+      if (!FORM_KEYS.includes(k)) rows.push({ label: STATS[k].label, a: avg(last.slice(-4).map((r) => val(r, k))), b: avg(last.map((r) => val(r, k))), dec: 1, hl: true });
+      for (const x of FORM_KEYS) rows.push({ label: STATS[x].label, a: f[x].a, b: f[x].b, dec: 1, hl: x === k });
+      rows.push({ label: "Games started", a: (100 * f.st.a) / 4, b: (100 * f.st.b) / f.n, dec: 0, unit: "%", note: `${f.st.a} of 4 vs ${f.st.b} of ${f.n}` });
+    }
+    const R = g?.rest?.[p.team];
+    const rest = !R ? "" : R.days === 1 ? `Back-to-back: his team played last night${R.g4 >= 3 ? `, ${R.g4} games in 4 nights` : ""}.` : R.g4 >= 3 ? `${R.g4} games in 4 nights.` : R.days != null ? `${R.days - 1} day${R.days - 1 === 1 ? "" : "s"} of rest.` : "";
+    return TREND.form(rows, f ? `last season's games fill in when needed` : "",
+      "In 2024-26 backtests, hot and cold streaks didn't carry over: players scoring 25%+ above their last-12 average averaged 5% under the projection, and hot 3-point shooters 11% under. Minutes moved results a little: players whose minutes rose 25%+ beat the projection's middle on rebounds and assists about 55% of the time, and those whose minutes fell 25%+ about 44%.", rest)
+      + `<h3>News, last 7 days</h3>${NOTES.newsList(NOTES.newsFor(p.name, p.pid))}`;
+  },
 };
 
 function openPlayer(pid, g) {

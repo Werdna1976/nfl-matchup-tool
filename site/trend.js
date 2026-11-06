@@ -126,6 +126,7 @@ const TREND = (() => {
         <div class="small">Model <b>${pct(l.p)}</b>${l.pa != null ? ` · careful ${pct(l.pa)}` : ""}${l.price != null ? ` · price <b>${cents(l.price)}</b>` : ""}${proj != null ? ` · projected <b>${fmt(proj, 1)}</b>` : ""}
           · cleared <b>${hits} of last ${rows.length}</b>${all.length > rows.length ? ` (${hitsAll} of ${all.length} in the log)` : ""}</div>
       </div>
+      ${config.extra ? `<div class="trend-form">${config.extra(p, l)}</div>` : ""}
       <h3>${esc(config.label(k))}, last ${rows.length} games</h3>
       ${bars(rows, k, line, side)}
       <div class="muted small">Green = would have cleared this bet. Dashed line = the line (${esc(String(line))}). Average ${fmt(avg(k, rows), 1)}.</div>
@@ -148,6 +149,24 @@ const TREND = (() => {
     d.scrollTop = 0;
   }
 
+  // "Form": last 4 games vs. last 12 for a few stats, with what the backtests say a change means.
+  // rows: [{label, a (last 4), b (last 12), dec, unit, note, hl}]
+  function form(rows, sub, note, rest) {
+    rows = rows.filter((r) => has(r.a) && has(r.b));
+    if (!rows.length && !rest) return "";
+    const chg = (r) => {
+      if (!(r.b > 0)) return "";
+      const d = r.a / r.b - 1, big = Math.abs(d) >= 0.1;
+      return `<span class="${big ? (d > 0 ? "edge-good" : "edge-bad") : "muted"}">${d >= 0 ? "+" : "−"}${Math.round(Math.abs(d) * 100)}%</span>`;
+    };
+    return `<h3>Form: last 4 games vs last 12 ${sub ? `<span class="muted small">(${esc(sub)})</span>` : ""}</h3>
+      ${rows.length ? `<table class="form-t"><thead><tr><th></th><th>Last 4</th><th>Last 12</th><th>Change</th><th></th></tr></thead><tbody>
+      ${rows.map((r) => `<tr${r.hl ? ' class="hl"' : ""}><td>${esc(r.label)}</td><td>${fmt(r.a, r.dec ?? 1)}${r.unit || ""}</td><td>${fmt(r.b, r.dec ?? 1)}${r.unit || ""}</td><td>${chg(r)}</td><td class="muted small">${esc(r.note || "")}</td></tr>`).join("")}
+      </tbody></table>` : ""}
+      ${rest ? `<div class="small">${esc(rest)}</div>` : ""}
+      ${note ? `<div class="muted small">${esc(note)}</div>` : ""}`;
+  }
+
   document.addEventListener("click", (e) => {
     const b = e.target.closest?.("[data-trend]");
     if (!b) return;
@@ -159,5 +178,5 @@ const TREND = (() => {
   });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); });
 
-  return { link, open, close, set config(c) { config = c; }, get config() { return config; } };
+  return { link, open, close, form, set config(c) { config = c; }, get config() { return config; } };
 })();
