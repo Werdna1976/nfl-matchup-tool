@@ -47,6 +47,13 @@ STAT_KEYS = {
     "rushing_tds": "rtd", "targets": "tgt", "receptions": "rec",
     "receiving_yards": "yds", "receiving_tds": "td", "scrimmage_yards": "rry",
 }
+# extra game-log columns for the "Last 10" panel only (not modeled)
+LOG_EXTRA = {
+    "sacks_suffered": "sk", "passing_first_downs": "pfd", "passing_20": "p20", "passing_air_yards": "pay",
+    "rushing_first_downs": "rfd", "rushing_10": "r10", "receiving_air_yards": "ray",
+    "receiving_yards_after_catch": "yac", "receiving_first_downs": "cfd", "receiving_20": "c20",
+    "fumbles_lost_total": "fl",
+}
 
 
 def fetch(url, timeout=60):
@@ -581,6 +588,13 @@ def build(season):
             for col, short in STAT_KEYS.items():
                 v = getattr(r, col)
                 row[short] = 0 if pd.isna(v) else int(v)
+            for col, short in LOG_EXTRA.items():
+                v = getattr(r, col, None)
+                if v is not None and not pd.isna(v):
+                    row[short] = int(v)
+            ts = getattr(r, "target_share", None)
+            if ts is not None and not pd.isna(ts):
+                row["tsh"] = int(round(ts * 100))   # share of the team's targets, in percent
             log.append(row)
         players[pid] = {"name": last.player_display_name, "pos": last.position, "team": last.team,
                         "img": last.headshot_url if isinstance(last.headshot_url, str) else None,

@@ -39,6 +39,9 @@ COMBOS = {"pra": ("pts", "reb", "ast"), "pr": ("pts", "reb"), "pa": ("pts", "ast
           "ra": ("reb", "ast"), "sb": ("stl", "blk")}
 # shot volume, worked out from the box score: 2-pointers are field goals minus 3-pointers
 SHOTS = ["fg3a", "fg2", "fg2a"]
+# box-score extras shown in the "Last 10" panel only (not modeled): free throws, offensive and
+# defensive boards, fouls, plus-minus
+LOG_EXTRA = ["ftm", "fta", "oreb", "dreb", "pf", "pm"]
 RATE_STATS = ["pts", "reb", "ast", "fg3", "stl", "blk", "tov", *SHOTS]
 PROPS = ["pts", "reb", "ast", "fg3", "pra", "pr", "pa", "ra", "stl", "blk", "sb", "tov", *SHOTS]
 DISCRETE = {"reb", "ast", "fg3", "stl", "blk", "tov", "ra", "sb", *SHOTS}   # small counts: negative binomial
@@ -83,13 +86,16 @@ def _norm_box(df):
         "home": df.home_away == "home",
         "fga": df.field_goals_attempted, "fta": df.free_throws_attempted, "oreb": df.offensive_rebounds,
         "fg3a": df.three_point_field_goals_attempted,
+        "ftm": df.free_throws_made, "dreb": df.defensive_rebounds, "pf": df.fouls,
+        "pm": pd.to_numeric(df.plus_minus.astype(str).str.replace("+", "", regex=False), errors="coerce"),
         "starter": df.starter.fillna(False).astype(bool),
     })
     for k, col in BASE.items():
         out[k] = pd.to_numeric(df[col], errors="coerce")
     out["fg2"] = pd.to_numeric(df.field_goals_made, errors="coerce") - out["fg3"]
     out["fg2a"] = pd.to_numeric(out["fga"], errors="coerce") - pd.to_numeric(out["fg3a"], errors="coerce")
-    num = ["fga", "fta", "oreb", "fg3a", "fg2", "fg2a", *BASE]
+    num = ["fga", "fta", "oreb", "fg3a", "fg2", "fg2a", "ftm", "dreb", "pf", "pm", *BASE]
+    out[num] = out[num].apply(pd.to_numeric, errors="coerce")
     out[num] = out[num].fillna(0).astype(float)
     out["played"] = (out["min"] > 0) & ~df.did_not_play.fillna(False).astype(bool)
     return out
@@ -106,6 +112,7 @@ def load_box(season):
                                                "opponent_team_abbreviation", "home_away", "did_not_play", "starter", "field_goals_made",
                                                "field_goals_attempted", "free_throws_attempted",
                                                "offensive_rebounds", "three_point_field_goals_attempted",
+                                               "free_throws_made", "defensive_rebounds", "fouls", "plus_minus",
                                                *BASE.values()]))
     return _norm_box(df)
 
@@ -176,7 +183,8 @@ def espn_box(gid):
                  "fg3a": num("threePointFieldGoalsMade-threePointFieldGoalsAttempted", 1),
                  "stl": num("steals"), "blk": num("blocks"), "tov": num("turnovers"),
                  "fga": num("fieldGoalsMade-fieldGoalsAttempted", 1), "fta": num("freeThrowsMade-freeThrowsAttempted", 1),
-                 "oreb": num("offensiveRebounds")}
+                 "oreb": num("offensiveRebounds"), "ftm": num("freeThrowsMade-freeThrowsAttempted", 0),
+                 "dreb": num("defensiveRebounds"), "pf": num("fouls"), "pm": num("plusMinus")}
             r["fg2"] = num("fieldGoalsMade-fieldGoalsAttempted", 0) - r["fg3"]
             r["fg2a"] = r["fga"] - r["fg3a"]
             r["played"] = r["min"] > 0 and not a.get("didNotPlay", False)
@@ -623,7 +631,7 @@ def rescale(proj, r):
 
 def player_index(box):
     """{pid: [game dicts oldest first]} for played games."""
-    cols = ["gid", "date", "season", "tm", "opp", "home", "starter", *BASE, *SHOTS]
+    cols = ["gid", "date", "season", "tm", "opp", "home", "starter", *BASE, *SHOTS, *LOG_EXTRA]
     p = box[box.played].sort_values(["date", "gid"])
     return {pid: g[cols].to_dict("records") for pid, g in p.groupby("pid")}
 
@@ -922,6 +930,7 @@ def build(today, run_backtest=True):
             for x in season_games:
                 row = {"d": x["date"], "opp": x["opp"], "tm": x["tm"], "h": int(bool(x["home"]))}
                 row.update({k: int(round(x[k])) for k in (*BASE, *SHOTS)})
+                row.update({k: int(round(x[k])) for k in LOG_EXTRA if x.get(k) is not None and not pd.isna(x[k])})
                 if x.get("starter"):
                     row["s"] = 1
                 if ly:

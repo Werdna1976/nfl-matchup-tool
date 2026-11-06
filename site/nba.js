@@ -21,13 +21,32 @@ const STATS = {
   blk: { label: "Blocks", short: "Blk", dec: 1 },
   sb: { label: "Steals + Blocks", short: "S+B", dec: 1, parts: ["stl", "blk"] },
   tov: { label: "Turnovers", short: "TO", dec: 1 },
+  // box-score extras, shown in the "Last 10" panel only
+  ftm: { label: "Free throws made", short: "FTM", dec: 1 },
+  fta: { label: "Free throw attempts", short: "FTA", dec: 1 },
+  oreb: { label: "Offensive rebounds", short: "OReb", dec: 1 },
+  dreb: { label: "Defensive rebounds", short: "DReb", dec: 1 },
+  pf: { label: "Personal fouls", short: "PF", dec: 1 },
+  pm: { label: "Plus-minus", short: "+/-", dec: 1 },
 };
+// the "Last 10" panel's columns, in order, under these headings
+const TREND_GROUPS = [
+  ["", ["min"]],
+  ["Scoring", ["pts", "fg3", "fg3a", "fg2", "fg2a", "ftm", "fta"]],
+  ["Boards and passing", ["reb", "oreb", "dreb", "ast", "tov"]],
+  ["Defense", ["stl", "blk", "pf"]],
+  ["Combos", ["pra", "pr", "pa", "ra", "sb"]],
+  ["", ["pm"]],
+];
+const TREND_GROUP = Object.fromEntries(TREND_GROUPS.flatMap(([g, ks]) => ks.map((k) => [k, g])));
 const TABLE_KEYS = ["min", "pts", "reb", "ast", "fg3", "fg3a", "fg2", "fg2a", "pra", "stl", "blk"];
 const ALL_KEYS = ["min", "pts", "reb", "ast", "fg3", "fg3a", "fg2", "fg2a", "pra", "pr", "pa", "ra", "stl", "blk", "sb", "tov"];
 const PROP_KEYS = ALL_KEYS.filter((k) => k !== "min");
 // the props worth betting, for the alt-line finder
 const FEATURED = ["pts", "reb", "ast", "fg3", "pra"];
 const val = (r, k) => (STATS[k].parts ? STATS[k].parts.reduce((a, c) => a + r[c], 0) : r[k]);
+// the panel reads extras that older data files may lack: missing stays missing, not NaN
+const trendVal = (r, k) => (STATS[k].parts ? (STATS[k].parts.every((c) => r[c] != null) ? val(r, k) : null) : r[k] ?? null);
 
 // ---------------------------------------------------------------- probability math (mirrors scripts/nba_build.py)
 
@@ -1080,8 +1099,9 @@ const pv = { n: 10, stat: "pts" };
 // The side panel that opens when a player prop is clicked on a Bets list (trend.js)
 TREND.config = {
   player: (pid) => DATA.players[pid],
-  keys: () => ["min", "pts", "reb", "ast", "fg3", "pra", "pr", "pa", "ra", "stl", "blk", "tov", "fg3a"],
-  val: (r, k) => val(r, k),
+  keys: () => TREND_GROUPS.flatMap(([, ks]) => ks),
+  group: (k) => TREND_GROUP[k] || "",
+  val: trendVal,
   label: (k) => STATS[k].label,
   short: (k) => STATS[k].short,
   when: (r, split) => {
