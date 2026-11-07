@@ -472,6 +472,7 @@ const BASKETS = (() => {
           latent.set(id, { x, sorted: Float64Array.from(x).sort() });
         }
         const { x, sorted } = latent.get(id);
+        leg.lat = x;   // the raw draw itself, for leaders.js (who finishes on top across games)
         const cut = (q) => sorted[Math.min(N - 1, Math.max(0, Math.floor(q * N)))];
         if (leg.side === "over") { const c = cut(1 - leg.p); for (let i = 0; i < N; i++) hit[i] = x[i] > c; }
         else { const c = cut(leg.p); for (let i = 0; i < N; i++) hit[i] = x[i] < c; }

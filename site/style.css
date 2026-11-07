@@ -381,3 +381,14 @@ tr.trend-on > td { background: var(--band50); }
 .pr-leg { white-space: normal; }
 .pr-leg + .pr-leg { margin-top: 3px; }
 table.pairs-t td.lt-leg { min-width: 260px; }
+
+/* Leaders view (leaders.js) */
+.ld-bar { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.ld-sum { margin: 4px 0 10px; line-height: 1.5; }
+.ld-scroll { overflow-x: auto; }
+table.ld-t td, table.ld-t th { text-align: right; white-space: nowrap; padding: 6px 8px; vertical-align: top; }
+table.ld-t td.ld-name, table.ld-t th:first-child, table.ld-t td.ld-notes, table.ld-t th:last-child { text-align: left; }
+table.ld-t td.ld-notes { white-space: normal; min-width: 260px; color: var(--muted); line-height: 1.4; }
+.ld-swing { font-size: 12px; font-weight: 600; padding: 1px 7px; border-radius: 999px; background: var(--panel-2); }
+.ld-swing.high { color: var(--warn); }
+.ld-swing.low { color: var(--muted); }
