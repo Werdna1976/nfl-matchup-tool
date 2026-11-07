@@ -19,6 +19,15 @@ starts out matching your computer's setting and remembers your choice).
     most three locks. Each card shows its "still worth it" payout, for when Polymarket's parlay builder quotes less.
   - **Best mispriced props**: single bets across every game today and tomorrow where the model's fair price
     beats Polymarket's, pressure-tested.
+- **🏆 Leaders** (header button, or the second card in the game list): who finishes on top of the slate in one
+  stat, with each player's chance and fair price. NFL: passing yards, passing TDs, rushing yards, receiving yards,
+  and receptions for the whole week or one day (Thursday, Sunday, Monday). NBA: points, rebounds, assists, threes,
+  and PRA for the day picked at the top. Every game is simulated with the same engine as the game pages and the top
+  number in each simulated slate wins (ties split); finished games count with their real box score. Each player shows
+  his projection, his **ceiling** (what he reaches 1 game in 10 and 1 in 33), his **volatility** next to the other
+  contenders, and notes such as "Upside pick" (his chance to lead ranks well above his projection) or "Steady, not
+  explosive", plus game script (likely trailing, blowout risk, highest total). When Polymarket lists a leader market
+  for that stat and slate, its price and the edge show next to the model's.
 - **Each game** has four tabs:
   - **Bets** (Polymarket, opens on its own): **Mispriced props** (single bets where the model's fair price is at
     least 3¢ above Polymarket's, graded Verified / Caution / Flagged; flagged bets stay listed with their likely issue named), **Negative correlation multipliers** (two props that land

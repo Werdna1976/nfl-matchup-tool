@@ -305,7 +305,7 @@ async function refreshInjuries() {
 
 // reload the data file (rebuilt hourly) and re-check lines, injuries, and headlines
 async function reloadAll() {
-  BASKETS.clear();
+  BASKETS.clear(); LEADERS.clear();
   try { DATA = await loadData(); computeRanks(); } catch (e) { /* keep what we have */ }
   await refreshLines(true);
 }
@@ -344,10 +344,11 @@ async function boot() {
   state.week = Number(hash.get("week")) || DATA.week;
   if (!DATA.weeks.includes(state.week)) state.week = DATA.weeks[0];
   state.gameId = hash.get("game");
-  state.view = hash.get("view") === "props" ? "props" : null;
+  state.view = ["props", "leaders"].includes(hash.get("view")) ? hash.get("view") : null;
   renderMeta();
   $("#refreshBtn").onclick = reloadAll;
   $("#propsBtn").onclick = openProps;
+  $("#leadersBtn").onclick = openLeaders;
   NOTES.autoRefresh(reloadAll);
   $("#slipBtn").onclick = () => toggleSlip(true);
   $("#howLink").onclick = (e) => { e.preventDefault(); openHow(); };
@@ -383,14 +384,14 @@ const ord = (n) => n + (["th", "st", "nd", "rd"][(n % 100 > 10 && n % 100 < 14) 
 
 function renderWeeks() {
   $("#weeks").innerHTML = DATA.weeks.map((w) => `<button type="button" aria-pressed="${w === state.week}" data-w="${w}">Week ${w}</button>`).join("");
-  $("#weeks").querySelectorAll("button").forEach((b) => b.onclick = () => { state.view = null; state.week = Number(b.dataset.w); state.gameId = null; renderWeeks(); renderGames(); });
+  $("#weeks").querySelectorAll("button").forEach((b) => b.onclick = () => { if (state.view !== "leaders") state.view = null; state.week = Number(b.dataset.w); state.gameId = null; renderWeeks(); renderGames(); });
 }
 
 function renderGames() {
   const games = DATA.games.filter((g) => g.week === state.week);
   // open on the first game that isn't over yet
   if (!games.find((g) => g.id === state.gameId)) state.gameId = (games.find((g) => RESULT.state(g) !== "post") || games[0])?.id;
-  $("#games").innerHTML = PROPS_CARD() + (games.map((g) => `
+  $("#games").innerHTML = PROPS_CARD() + LEADERS_CARD() + (games.map((g) => `
     <button type="button" class="gcard ${RESULT.state(g)}" data-id="${g.id}" aria-current="${!state.view && g.id === state.gameId}">
       <div class="row"><span class="teams">${RESULT.teams(g)}</span>${RESULT.badge(g) || `<span class="when">${esc(kickoff(g))}</span>`}</div>
       <div class="lines">${RESULT.state(g) === "post" ? esc(RESULT.settled(g)) : `${esc(spreadText(g))} · O/U ${g.total ?? "–"}`}</div>
@@ -398,6 +399,7 @@ function renderGames() {
     </button>`).join("") || `<div class="empty">No games this week.</div>`);
   $("#games").querySelectorAll(".gcard[data-id]").forEach((b) => b.onclick = () => { state.view = null; state.gameId = b.dataset.id; state.team = null; renderGames(); });
   $("#games").querySelector("[data-props]").onclick = openProps;
+  $("#games").querySelector("[data-leaders]").onclick = openLeaders;
   setHash();
   renderGame();
 }
@@ -426,8 +428,68 @@ function renderProps() {
   ALLPROPS.render(el, { games: DATA.games, adapter: basketAdapter, onOpen: openFromProps, sport: "NFL" });
 }
 
+// ---------------------------------------------------------------- leaders: who tops the week in one stat (leaders.js)
+
+const LEADERS_CARD = () => `
+    <button type="button" class="gcard props-card" data-leaders aria-current="${state.view === "leaders"}">
+      <div class="row"><span class="teams">🏆 Leaders</span></div>
+      <div class="lines">Week ${state.week}: most passing, rushing, receiving</div>
+    </button>`;
+function openLeaders() { state.view = "leaders"; renderGames(); window.scrollTo({ top: 0 }); }
+// pm: Polymarket-style wording for the stat each leader market is about.
+// tail: the model's upper tail runs long when you take the best of 15 games (simulated weekly
+// passing leader 409 yds vs. a real median of 376 in 2024-2026), so results above a player's
+// median are pulled in by this factor, fitted so the simulated leader matches the real one
+// (rushing 160, receiving 165, 4 passing TDs and 12 catches already matched).
+const LEADER_CATS = [
+  { key: "pyd", label: "Passing yards", unit: "passing yds", floor: 120, pos: ["QB"], tail: 0.81, pm: /pass(ing)?\s*y(ar)?ds|passing leader/i },
+  { key: "ptd", label: "Passing TDs", unit: "passing TDs", floor: 0.6, pos: ["QB"], pm: /pass(ing)?\s*(td|touchdown)/i },
+  { key: "ryd", label: "Rushing yards", unit: "rushing yds", floor: 15, tail: 0.93, pm: /rush(ing)?\s*y(ar)?ds|rushing leader/i, pmNot: /receiving|scrimmage/i },
+  { key: "yds", label: "Receiving yards", unit: "receiving yds", floor: 15, pm: /receiving\s*y(ar)?ds|receiving leader/i, pmNot: /rushing|scrimmage/i },
+  { key: "rec", label: "Receptions", unit: "catches", floor: 2, pm: /receptions|catches/i },
+];
+const dayName = (day) => new Date(`${day}T12:00:00`).toLocaleDateString(undefined, { weekday: "long" });
+function leaderScopes() {
+  const games = DATA.games.filter((g) => g.week === state.week);
+  if (!games.length) return [];
+  const days = [...new Set(games.map((g) => g.day))].sort();
+  const short = (day) => new Date(`${day}T12:00:00`).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+  return [{ id: "week", label: `Whole week (${games.length} games)`, games, first: days[0], last: days.at(-1), span: "the week" },
+    ...days.map((day) => { const gs = games.filter((g) => g.day === day); return { id: day, label: `${short(day)} (${gs.length})`, games: gs, first: day, last: day, span: `on ${dayName(day)}` }; })];
+}
+// the real number from a finished game's box score
+const leaderActual = (pid, g, k) => {
+  const r = DATA.players[pid]?.log.find((x) => x.w === g.week && [g.home, g.away].includes(x.tm));
+  return r ? r[k] ?? null : null;
+};
+// game script and scoring environment, for the notes
+function leaderEnv(g, tm, k, rows) {
+  const lead = (tm === g.home ? 1 : -1) * g.model.margin.mean, tot = g.total ?? g.model.total.mean;
+  const tots = [...new Set(rows.map((r) => r.g))].map((x) => x.total ?? x.model.total.mean);
+  const out = [];
+  if (["pyd", "ptd", "yds", "rec"].includes(k) && tots.length > 2 && tot >= Math.max(...tots)) out.push(`Highest total on the slate (O/U ${fmt(tot, 1)})`);
+  if (["pyd", "yds", "rec"].includes(k) && lead <= -6) out.push(`Likely trailing (${fmt(-lead, 1)}-pt underdog): more throws late`);
+  if (k === "ryd" && lead >= 6) out.push(`Likely ahead (${fmt(lead, 1)}-pt favorite): more carries late`);
+  if (k === "ryd" && lead <= -7) out.push(`Big underdog (${fmt(-lead, 1)}): carries may dry up`);
+  return out[0] || null;
+}
+function renderLeaders() {
+  let el = $("#leaders");
+  if (!el) { $("#game").innerHTML = `<div class="panel" id="leaders"></div>`; el = $("#leaders"); }
+  LEADERS.render(el, {
+    sport: "NFL", league: "nfl", title: `Week ${state.week}`, scopes: leaderScopes(), cats: LEADER_CATS,
+    adapter: basketAdapter, cdf, actual: leaderActual, env: leaderEnv,
+    extraActual: (g, k) => [g.away, g.home].flatMap((tm) => (g.players[tm] || []).map((pid) => {
+      const p = DATA.players[pid], v = leaderActual(pid, g, k);
+      return v == null ? null : { pid, name: p.name, team: p.team, pos: p.pos, v };
+    })).filter((x) => x && (k !== "pyd" && k !== "ptd" || x.pos === "QB")),
+    gameText: (g) => `${g.away} @ ${g.home}`, whenText: (g) => kickoff(g), onOpen: openFromProps,
+  });
+}
+
 function renderGame() {
   if (state.view === "props") return renderProps();
+  if (state.view === "leaders") return renderLeaders();
   const g = curGame();
   if (!g) { $("#game").innerHTML = ""; return; }
   if (!state.team) state.team = "BOTH";
