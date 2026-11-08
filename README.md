@@ -70,9 +70,30 @@ median on rebounds and assists) and are shown, not modeled.
 the full name), and tags them injury, illness, rest, role, trade/contract, morale/discipline, or returning. Team
 stories about morale or trades go under the team. Stories are kept 7 days and appear as notes, in the Last 10
 panel, and in the pressure test (health news on an over is a flag). The tags are keyword rules, not a reading of
-the story, and there is no archive of old feeds to test them on, so none of it is in the projections. Message
+the story, and there is no archive of old feeds to test them on, so the tags themselves are not in the projections
+(the NFL role signals below are). Message
 boards (Reddit, X) aren't included: they need paid keys and are mostly noise. The market reacts to real news
 within minutes, faster than an hourly refresh, so news is most useful as a reason to double-check a cheap price.
+
+**NFL players back from injury, and role news.** The page lists players from each team's last three games, so a
+starter who missed more than that dropped off (the Jets' week-9 page had no Breece Hall) and the backup kept his
+fill-in workload (Braelon Allen, 18.6 carries a game while Hall was out). `scripts/return_study.py` looked at 600+
+returns from 2020-26: a back or receiver who missed 2+ games hurt gets about 85% of his old carries and 83% of
+his targets in his first game back, then all of it, and the fill-ins give back part of what they gained.
+Building that in cut fill-in backs' carry misses from 4.25 to 3.47 a game in the first game back (3.7 vs 4.4 in
+games 2-3), tested leave-one-season-out; receivers' targets improved a little (2.07 to 1.99). A player is put
+back on the page when he missed 2+ games with an injury (Out/Doubtful, IR, or inactive on nflverse's weekly
+roster) and this week's injury report (no game status or Questionable) or a news story says he plays; a newer
+"ruled out" story or an Out/Doubtful status keeps him off.
+
+The news step also reads each NFL story for role signals, pinned to the player the phrase is about: back or
+will play, ruled out, named the starter (or lead back, full workload), snap count (eased in, committee), and
+benched (demoted, losing work; "Hall starts over Allen" marks Allen). A returning player named the starter gets
+his full role (and his fill-ins give back more); one on a snap count gets 60%. Anyone else named the starter
+gets +15% volume, benched -15%. Those numbers are set by hand, since there's no archive of old feeds to test
+on. Only stories since the team's last game count. Every change shows in the player's window ("Why his
+projection moved") and his notes, with the story and its source. If the live injury report later has the
+returning player out, his fill-ins get their volume back.
 
 ### Models
 
@@ -114,6 +135,7 @@ Polymarket prices are pulled on game day (NBA), from the day before (NFL), or an
 | Live injury report and headlines for player notes (both sports) | ESPN public API, read by your browser | No |
 | NFL snap counts (snap-share trend) | [nflverse](https://github.com/nflverse/nflverse-data) (from Pro Football Reference) | No |
 | Player and team news, tagged by topic | ESPN team news feeds, RotoWire, CBS Sports, Yahoo, ProFootballTalk (NFL), read on each refresh | No |
+| NFL weekly roster status (injured reserve, inactive) for players coming back | [nflverse](https://github.com/nflverse/nflverse-data) | No |
 
 A GitHub Action rebuilds the data every hour and republishes the site. While a page is open it
 re-checks lines, the ESPN injury report, and headlines every 10 minutes. Each time the page
@@ -128,6 +150,7 @@ with **Run workflow**.
 
 ```bash
 pip install -r requirements.txt
+python scripts/news_build.py          # writes site/data/news.json (NFL role news feeds the next step)
 python scripts/build_data.py          # writes site/data/data.json
 python scripts/backtest.py 2026       # writes site/data/backtest.json
 python scripts/nba_build.py           # writes site/data/nba.json and nba_backtest.json
@@ -139,7 +162,8 @@ cd site && python -m http.server 8000 # open http://localhost:8000
 - `scripts/build_data.py` downloads data and builds projections.
 - `scripts/model.py` holds the probability math (mirrored in `site/app.js`).
 - `scripts/backtest.py` replays past weeks to check the ranges and tunes their width.
-- `scripts/news_build.py` collects player news on each refresh and writes `site/data/news.json`.
+- `scripts/news_build.py` collects player news on each refresh and writes `site/data/news.json` (before the NFL build).
+- `scripts/return_study.py` measures how much of his role a player gets back after an injury (run by hand).
 - `scripts/trend_study.py` measures whether last-4 vs last-12 trends beat the model (run by hand).
 - `scripts/nba_build.py` downloads NBA data, builds projections, and tests the ranges on past games.
 - `site/` is the web pages (plain HTML, CSS, JavaScript; no build step): `index.html` + `app.js` for NFL,

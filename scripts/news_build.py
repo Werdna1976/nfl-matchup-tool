@@ -19,9 +19,13 @@ star) are kept under the team when no single player is named.
 
 The tags are keyword rules, not a reading of the story: "frustrated" in a headline gets the
 morale tag whether the player is frustrated or his coach is. They point at stories worth
-reading; they are not in the projections, and they can't be backtested (no archive of old feeds).
+reading, and they can't be backtested (no archive of old feeds).
 
-Run:  python scripts/news_build.py [--prev site/data/news.json]
+NFL stories also get role signals (see ROLE_PATTERNS): returning, ruled out, starter, snap count,
+benched. build_data.py reads them to decide whether a player who has been out is back this week
+and how much of his old role he gets, so this step runs before the NFL build.
+
+Run:  python scripts/news_build.py [--prev site/data/news.json]   (before build_data.py)
 """
 import argparse
 import datetime as dt
@@ -77,6 +81,90 @@ TAGS = [
                r"off the injury report|back (?:in|at) practice|good to go|will play|expected to play|set to play|upgraded"),
 ]
 TAG_RE = [(t, re.compile(p, re.I)) for t, p in TAGS]
+
+# Role signals: what a story says will happen to one player's playing time. Unlike the tags these
+# feed the NFL projections (build_data.py), so each phrase is pinned to the player it is about:
+# the nearest name before it in the same sentence part (or after it, if none is before).
+#   out    he won't play (blocks a "returning" call)        ret    he is back / will play
+#   start  starter, lead back, full workload                lim    snap count, eased back, committee
+#   down   benched, demoted, losing work
+# Phrases like "over", "cut into", "at the expense of" mark the NEXT name as losing work
+# ("Hall to start over Allen": Hall start, Allen down). Matched on normalized text (see norm).
+ROLE_PATTERNS = [
+    ("out", r"ruled out|will not play|wont play|will miss|to miss|expected to miss|not expected to play|"
+            r"(?:placed|lands|landed|goes|going|headed|moved) (?:on|to) (?:ir|injured reserve)|"
+            r"out for (?:the )?(?:season|year|game|week|weeks|sunday|monday|thursday)|season[ -]ending|\binactive\b|sidelined (?:for|again|until)"),
+    ("ret", r"activated|designated to return|(?:returns?|returning|returned) (?:to (?:practice|action|the lineup|the field|play)|from|vs|against|for|this|sunday|monday|thursday|saturday)|"
+            r"(?:will|expected to|set to|on track to|in line to|poised to|plans to|likely to|slated to) (?:play|return|suit up|make (?:his|the) return)|"
+            r"\bcleared\b|good to go|full practice|practic(?:e|es|ed|ing) fully|full participant|off the injury report|no injury designation|"
+            r"back (?:at|in) practice|back in the lineup|is back\b|back from (?:injury|ir|injured reserve|(?:a |his )?\w+ injury)|upgraded|\breturns\b|\breturning\b|makes? (?:his|the) return"),
+    ("start", r"named (?:the )?starter|(?:will|to|set to|expected to|slated to|poised to|in line to) start\b|"
+              r"(?:gets|get|earns|earn|draws|wins|regains?|reclaims?) (?:the )?(?:start|starting (?:job|role|nod)|job|lead role)|"
+              r"starting (?:role|job|nod)|(?:is|as|remains|will be) the starter|(?:lead|starting|top) (?:back|running back|rb)|\brb1\b|\bwr1\b|bell ?cow|workhorse|feature back|lead role|featured role|"
+              r"top (?:back|option)|full workload|no (?:snap|pitch) count|no (?:limitations|restrictions)|without restrictions|"
+              r"(?:expanded|bigger|larger|increased) role|more (?:carries|touches|snaps|work|targets)|promot"),
+    ("lim", r"snap count|pitch count|limited (?:snaps|role|workload|reps|work)|eas(?:e|ed|ing) (?:him )?(?:back|in)|"
+            r"workload (?:limit|restriction|management|will be managed)|wont (?:have|get|see) a full|not (?:have |get )?a full workload|"
+            r"part[ -]time|rotational role|split (?:carries|work|time|reps|snaps)|committee|timeshare|share (?:the )?(?:backfield|carries|work|load)"),
+    ("down", r"bench(?:ed)?\b|demot|backup role|los(?:e|es|ing) (?:his|the) (?:starting )?(?:job|role|spot)|lost (?:his|the) (?:starting )?(?:job|role|spot)|"
+             r"(?:reduced|smaller|diminished|lesser) role|fewer (?:carries|touches|snaps|targets)|"
+             r"(?:moves?|moved|drops?|dropped|slides?|slid|falls?|fell) (?:down|to (?:second|third|the bench)|behind)|second[ -]team|"
+             r"healthy scratch|out of the rotation"),
+]
+ROLE_RE = [(k, re.compile(p)) for k, p in ROLE_PATTERNS]
+# the name AFTER these loses work: "start over Allen", "cut into Allen's carries"
+TAKES_FROM = re.compile(r"\b(?:over|ahead of|in place of|instead of|replac(?:es|ing)|cut(?:s|ting)? into|eat(?:s|ing)? into|"
+                        r"(?:take|takes|taking|steal|steals) (?:carries|work|snaps|touches|targets) (?:from|away from)|at the expense of|supplants?|unseats?)\b")
+# sentence breaks: a phrase only looks ahead for its player within one part
+CLAUSE = re.compile(r"[;:!?|,()]|\s[-–—]\s|\.\s")
+NOT_RETURN = re.compile(r"(?:kick|kickoff|punt) returns?")
+
+
+def role_text(s):
+    """Lowercase story text with punctuation kept (for sentence breaks) and A.J.-style periods and
+    apostrophes dropped, so names line up with norm()."""
+    s = html.unescape(str(s or "")).lower()
+    s = re.sub(r"(?<=\b[a-z])\.(?=[a-z]\.)|(?<=\b[a-z]\.[a-z])\.", "", s)   # a.j. -> aj
+    s = re.sub(r"\b([a-z])\.([a-z])\b", r"\1\2", s)
+    s = re.sub(r"[’'`]", "", s)
+    s = re.sub(r"\bst\.", "st", s)
+    return NOT_RETURN.sub("special teams", s)
+
+
+def role_signals(text, names):
+    """{pid: set of role signals} for the players named in `text` (from role_text()).
+    names: {pid: [full name, last name if only one player in this story has it]} (normalized).
+    A phrase belongs to the nearest name before it; with none before, to the first name after it
+    in the same sentence part. A name after "over" / "cut into" / ... loses work ("down")."""
+    spots = []   # (start, end, pid)
+    for pid, ns in names.items():
+        for n in ns:
+            rx = r"\b" + r"[\s\-]+".join(re.escape(w) for w in n.split()) + r"s?\b"   # Allen's -> allens
+            spots += [(m.start(), m.end(), pid) for m in re.finditer(rx, text)]
+    if not spots:
+        return {}
+    spots.sort()
+    breaks = [m.start() for m in CLAUSE.finditer(text)]
+    part = lambda pos: sum(1 for b in breaks if b < pos)
+    out, taken = {}, set()
+    for kind, rx in ROLE_RE:
+        for m in rx.finditer(text):
+            before = [sp for sp in spots if sp[1] <= m.start()]
+            after = [sp for sp in spots if sp[0] >= m.end() and part(sp[0]) == part(m.start())]
+            who = before[-1][2] if before else after[0][2] if after else None
+            if who:
+                out.setdefault(who, set()).add(kind)
+    for m in TAKES_FROM.finditer(text):
+        after = [sp for sp in spots if sp[0] >= m.end() and part(sp[0]) == part(m.start())]
+        before = [sp for sp in spots if sp[1] <= m.start()]
+        if after and (not before or before[-1][2] != after[0][2]):
+            out.setdefault(after[0][2], set()).add("down")
+            taken.add(after[0][2])
+    for pid in taken:   # "Hall starts over Allen, the Jets' RB1 for a month": Allen isn't the starter
+        out[pid] -= {"start", "ret"}
+    return {pid: k for pid, k in out.items() if k}
+
+
 # Facts about health and availability can sit in a story's summary; judgment calls (morale, trade,
 # role) count only from the headline, since previews and recaps mention "streak" or "trade" in passing.
 # RotoWire's summary is the news itself, so all of it counts there.
@@ -215,8 +303,26 @@ def collect(sport, status):
 
 # ---------------------------------------------------------------- matching
 
+def nfl_roster():
+    """[(gsis id, name, team, espn id)] for every back, receiver, and QB with a stat this season, from
+    nflverse (not data.json): the news step runs before the NFL build, and a player coming back from
+    injury isn't on the page until the build has read his news."""
+    import build_data as B
+    today = dt.date.today()
+    season = today.year if today.month >= 8 else today.year - 1
+    st = B.read_csv(f"{B.NFLVERSE}/stats_player/stats_player_week_{season}.csv")
+    st = st[st.position.isin(["QB", "RB", "FB", "WR", "TE"])].sort_values("week").groupby("player_id").last()
+    ids = {gid: x.get("espn") for gid, x in B.player_ids().items()}
+    return [(pid, r.player_display_name, r.team, ids.get(pid)) for pid, r in st.iterrows()], dict(B.TEAM_NAMES)
+
+
 def roster(sport):
     """[(pid, name, team, espn_id)] for the players on the site, read from the data files."""
+    if sport == "nfl":
+        try:
+            return nfl_roster()
+        except Exception as e:
+            print("nflverse roster unavailable, using data.json:", e)
     path = os.path.join(SITE_DATA, "data.json" if sport == "nfl" else "nba.json")
     try:
         d = json.load(open(path))
@@ -235,15 +341,17 @@ def roster(sport):
     return out, d.get("team_names", {})
 
 
-def match(items, players, team_names):
+def match(items, players, team_names, want_roles=False):
     by_espn = {e: pid for pid, _, _, e in players if e}
+    full_name = {pid: name for pid, name, _, _ in players}
     names = {}
     for pid, name, _, _ in players:
         n = norm(name)
         if len(n.split()) >= 2:
             names.setdefault(n, []).append(pid)
     # one regex over every name, longest first, so "jaylen brown" isn't read as "jay brown"
-    pat = re.compile(r"\b(" + "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True)) + r")\b") if names else None
+    # (an "s" may follow: apostrophes are stripped, so "Allen's" reads "allens")
+    pat = re.compile(r"\b(" + "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True)) + r")s?\b") if names else None
     nick = {}
     for ab, full in team_names.items():
         parts = full.split()
@@ -264,8 +372,23 @@ def match(items, players, team_names):
                 if len(names[n]) == 1:   # two site players with one name: can't tell which
                     hit.add(names[n][0])
         rec = {k: it[k] for k in ("h", "x", "t", "s", "u", "g") if it.get(k) is not None}
+        sig = {}
+        if hit and want_roles:
+            # last names count only when one player in this story has that last name
+            lasts = {}
+            for pid in hit:
+                lasts.setdefault(norm(full_name[pid]).split()[-1], []).append(pid)
+            nm = {pid: [norm(full_name[pid])] + [ln for ln, ps in lasts.items() if ps == [pid] and len(ln) > 2] for pid in hit}
+            sig = role_signals(role_text(it["h"]), nm)
+            # a summary is the news itself for RotoWire and for ESPN stories about one player
+            if it.get("x") and (it.get("s") == "RotoWire" or len(ids) == 1):
+                for pid, k in role_signals(role_text(it["x"]), nm).items():
+                    sig.setdefault(pid, set()).update(k)
         for pid in hit:
-            out_p.setdefault(pid, []).append(rec)
+            r = dict(rec)
+            if sig.get(pid):
+                r["r"] = sorted(sig[pid])
+            out_p.setdefault(pid, []).append(r)
         if not hit and ({"morale", "trade"} & set(it["g"])):
             for ab, r in nick.items():
                 if r.search(it["h"]):
@@ -306,7 +429,7 @@ def main():
     for sport in ("nfl", "nba"):
         players, team_names = roster(sport)
         items = collect(sport, status)
-        by_p, by_t = match(items, players, team_names)
+        by_p, by_t = match(items, players, team_names, want_roles=sport == "nfl")
         old = prev.get(sport, {})
         out[sport] = {"players": merge(by_p, old.get("players"), cutoff, PER_PLAYER),
                       "teams": merge(by_t, old.get("teams"), cutoff, PER_PLAYER)}

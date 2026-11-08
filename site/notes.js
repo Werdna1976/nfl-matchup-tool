@@ -45,7 +45,8 @@ const NOTES = (() => {
   }
 
   // What a story is about, by keyword (the same rules as scripts/news_build.py). Keyword rules, not
-  // a reading of the story: they point at what's worth reading, and none of it is in the projections.
+  // a reading of the story: they point at what's worth reading. (NFL role signals, a separate set of
+  // rules in news_build.py, do move projections: see roleChips in app.js.)
   const TAGS = [
     ["illness", /illness|\bill\b|sick|flu\b|virus|stomach|migraine|non-injury|personal (?:reasons|matter)|bereavement|family matter/i],
     ["injury", /injur|hamstring|ankle|knee|groin|calf|quad|achilles|\bacl\b|\bmcl\b|concussion|shoulder|wrist|\bhand\b|foot|toe\b|hip\b|ribs?\b|oblique|back (?:injury|spasms?|tightness)|sprain|strain|fractur|torn|\btear\b|\bmri\b|x-rays?|surgery|ruled out|\bout for\b|questionable|doubtful|game-time decision|limited (?:in )?practice|did not practice|\bdnp\b|injured reserve|day-to-day|week-to-week|sidelined|tweak|aggravat|\bsore|banged up|carted|exited|left (?:the )?game/i],
@@ -148,7 +149,7 @@ const NOTES = (() => {
     // team-wide notes stay on top, then players with the strongest signals
     rows = rows.filter((r) => r.notes.length).sort((a, b) => (b.tag === "team") - (a.tag === "team") || score(b.notes) - score(a.notes));
     el.innerHTML = `
-      <div class="panel-head"><h2>Player notes</h2><span class="muted small">▲ good spot · ▼ tough spot · ! injury or minutes risk. Built from the model, recent games, ESPN's injury report, and player news (ESPN, RotoWire, CBS, Yahoo, ProFootballTalk) tagged by topic. News tags are keyword-based and not in the projections: read the story.</span></div>
+      <div class="panel-head"><h2>Player notes</h2><span class="muted small">▲ good spot · ▼ tough spot · ! injury or minutes risk. Built from the model, recent games, ESPN's injury report, and player news (ESPN, RotoWire, CBS, Yahoo, ProFootballTalk) tagged by topic. News tags are keyword-based; only players back from injury and role news (starter, snap count, benched) move NFL projections, and each says so.</span></div>
       ${rows.length ? `<div class="notes-list">${rows.map((r) => `
         <div class="note-row${r.pid ? "" : " team"}" data-pid="${r.pid || ""}">
           <div class="note-who"><span class="pname">${esc(r.name)}</span><span class="pos-tag">${esc(r.tag)}</span></div>

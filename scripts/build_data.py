@@ -621,6 +621,263 @@ def eligible_players(stats, team, upto_week, depth=False):
     return keep
 
 
+# ---------------------------------------------------------------- players coming back
+
+# A back or receiver who missed 2+ games hurt drops off the page (only players from the team's last
+# three games are listed), and the fill-ins' projections ride the games they started. When he is
+# back, both are wrong: the Jets' week-9 page had no Breece Hall and gave Braelon Allen his
+# five-game starter's workload. scripts/return_study.py measured 600+ returns (2020-2026, leave
+# one season out):
+#   - his first game back he gets about 0.85 of his old carries and 0.83 of his old targets
+#     (then all of it)
+#   - the fill-ins give back part of what they gained while he was out: theta x their share of
+#     his returning volume. Fill-in backs' misses on carries drop from 4.25 to 3.47 a game in his
+#     first game back (3.7 vs 4.4 in games 2-3, while their averages still carry the old role);
+#     receivers' targets improve a little (2.07 -> 1.99)
+RET_MU = {"carries": 0.85, "targets": 0.83}
+RET_SHARE = {"carries": (0.83, 0.94, 0.99), "targets": (0.83, 0.93, 0.99)}   # his share back, games 1-3
+RET_THETA = {"carries": (0.65, 0.55, 0.55), "targets": (0.55, 0.30, 0.35)}
+RET_MIN = {"carries": 0.25, "targets": 0.12}   # his share before he got hurt, to count as a role
+RET_GROUP = {"RB": ("RB",), "WR": ("WR", "TE"), "TE": ("WR", "TE")}
+RET_VOL = {"RB": ("carries", "targets"), "WR": ("targets",), "TE": ("targets",)}
+# News about his role (scripts/news_build.py role signals) can't be backtested: there is no
+# archive of old feeds. These are set by hand and kept modest; the page shows each one with its story.
+NEWS_MU = {"start": 1.0, "lim": 0.6}   # returning player named the starter / on a snap count
+NEWS_UP, NEWS_DOWN = 1.15, 0.85        # anyone else named the starter / benched or losing work
+RIDES = {"carries": ("carries", "rushing_yards", "rushing_tds"),
+         "targets": ("targets", "receptions", "receiving_yards", "receiving_tds")}
+VOL_KEY = {"carries": "car", "targets": "tgt"}
+
+
+def load_rosters(season):
+    """{gsis_id: {week: roster status}} from nflverse weekly rosters (ACT, RES = injured reserve,
+    INA = inactive, ...). {} if the download fails."""
+    try:
+        r = read_csv(f"{NFLVERSE}/weekly_rosters/roster_weekly_{season}.csv")
+    except Exception as e:
+        print("weekly rosters unavailable:", e)
+        return {}
+    out = {}
+    for x in r[r.game_type == "REG"].itertuples():
+        if isinstance(x.gsis_id, str):
+            out.setdefault(x.gsis_id, {})[int(x.week)] = x.status
+    return out
+
+
+def load_news(path=None):
+    """NFL player stories from site/data/news.json, filed by gsis id ({} without the file)."""
+    path = path or os.path.join(os.path.dirname(__file__), "..", "site", "data", "news.json")
+    try:
+        with open(path) as f:
+            return json.load(f).get("nfl", {}).get("players", {})
+    except (OSError, ValueError):
+        return {}
+
+
+def news_roles(items, since):
+    """{signal: newest story with it} among stories since `since` (unix time). A newer "out"
+    cancels an older "ret" and the other way around."""
+    out = {}
+    for it in sorted(items or [], key=lambda i: i.get("t", 0)):
+        if it.get("t", 0) < since:
+            continue
+        for k in it.get("r", []):
+            out[k] = it
+    if "out" in out and "ret" in out:
+        out.pop("ret" if out["out"]["t"] >= out["ret"]["t"] else "out")
+    return out
+
+
+def _story(it):
+    return {k: it[k] for k in ("h", "s", "u", "t") if it.get(k) is not None}
+
+
+def scale_proj(proj, vol, r):
+    """Scale a player's volume (carries or targets) and the stats that ride on it by r, keeping
+    each stat's shape; rushing + receiving yards follow the two parts."""
+    if not proj or abs(r - 1) < 1e-9:
+        return
+    before = {c: proj[c]["mean"] for c in ("rushing_yards", "receiving_yards") if c in proj}
+    for c in RIDES[vol]:
+        d = proj.get(c)
+        if not d:
+            continue
+        d["mean"] = round(d["mean"] * r, 3)
+        d["sd"] = round(math.sqrt(d["mean"]), 3) if d.get("dist") == "poisson" else round(max(d["sd"] * r, 0.5), 2)
+    sc = proj.get("scrimmage_yards")
+    if sc and before:
+        old = sum(before.values())
+        new = sum(proj[c]["mean"] for c in before)
+        if old > 0:
+            sc["mean"] = round(sc["mean"] * new / old, 2)
+            sc["sd"] = round(max(sc["sd"] * new / old, 0.5), 2)
+
+
+def team_shares(stats, team_stats, tm, upto_week):
+    """({(pid, week, vol): share of the team's carries/targets}, team weeks before upto_week)."""
+    t = team_stats[(team_stats.team == tm) & (team_stats.week < upto_week)].set_index("week")
+    s = stats[(stats.team == tm) & (stats.week < upto_week)]
+    out = {}
+    for r in s.itertuples():
+        for v in ("carries", "targets"):
+            tot = t.at[r.week, v] if r.week in t.index else 0
+            x = getattr(r, v)
+            if tot and tot > 0:
+                out[(r.player_id, int(r.week), v)] = (0.0 if pd.isna(x) else float(x)) / float(tot)
+    return out, sorted(int(w) for w in t.index)
+
+
+def find_returns(stats, tm, w, wks, shares, inj, rosters, news, since):
+    """Players back (or coming back) from 2+ missed games, for team `tm`'s game in week `w`.
+    [{pid, pos, k (games played since), gap, pre {vol: share before}, why, news}]
+
+    k = 0 (hasn't played yet) needs a sign he plays this week: on this week's injury report
+    without Out/Doubtful (Breece Hall: full practice, no status), or a news story saying he's back;
+    and no sign he doesn't (Out/Doubtful, IR or inactive this week, a newer "ruled out" story).
+    The missed games need a sign he was hurt (Out/Doubtful, IR, or inactive), not benched."""
+    s = stats[(stats.team == tm) & (stats.week < w) & stats.position.isin(list(RET_GROUP))]
+    inj_by = {}
+    if len(inj):
+        for r in inj[inj.team == tm].itertuples():
+            inj_by[(r.gsis_id, int(r.week))] = r
+    out = []
+    for pid, g in s.groupby("player_id"):
+        pos = g.position.iloc[-1]
+        pw = set(int(x) for x in g.week)
+        k = 0
+        while k < len(wks) and wks[-1 - k] in pw:
+            k += 1
+        if k > 2:
+            continue
+        gap = []
+        for x in reversed(wks[:len(wks) - k]):
+            if x in pw:
+                break
+            gap.append(x)
+        pre = [x for x in wks[:len(wks) - k - len(gap)] if x in pw][-4:]
+        if len(gap) < 2 or len(pre) < 2:
+            continue
+        hurt = any(getattr(inj_by.get((pid, x)), "report_status", None) in ("Out", "Doubtful")
+                   or rosters.get(pid, {}).get(x) in ("RES", "INA") for x in gap)
+        if not hurt:
+            continue
+        pre_sh = {v: sum(shares.get((pid, x, v), 0) for x in pre) / len(pre) for v in RET_VOL[pos]}
+        if not any(pre_sh[v] >= RET_MIN[v] for v in pre_sh):
+            continue
+        sig = news_roles(news.get(pid), since)
+        why = []
+        if k == 0:
+            r = inj_by.get((pid, w)) or inj_by.get((pid, w - 1))   # next week's report isn't out yet
+            status = getattr(r, "report_status", None) if r is not None else None
+            status = status if isinstance(status, str) else None
+            practice = getattr(r, "practice_status", None) if r is not None else None
+            if status in ("Out", "Doubtful") or rosters.get(pid, {}).get(w) in ("RES", "INA") or "out" in sig:
+                continue
+            if r is not None:
+                why.append(f"week {r.week} injury report: {status or 'no game status'}"
+                           + (f", {practice.lower()}" if isinstance(practice, str) else ""))
+            if r is None and "ret" not in sig:
+                continue
+        out.append({"pid": pid, "pos": pos, "k": k, "gap": len(gap), "pre": pre_sh, "why": why, "news": sig,
+                    "pre_wks": pre, "gap_wks": gap})
+    return out
+
+
+def apply_returns(rets, tm, gid, listed, players, shares, project):
+    """Add the returning players to the game and take back the volume the fill-ins gained.
+    project(pid) -> his projection from his own games. Records each change in players[pid]["adj"]."""
+    touched = set()
+    for R in rets:
+        pid, k = R["pid"], R["k"]
+        name = players[pid]["name"]
+        if k == 0:
+            if pid not in listed:
+                listed.append(pid)
+                players[pid]["proj"][gid] = project(pid)
+            vols = RET_VOL[R["pos"]]
+            usual = " and ".join(f"{round(100 * RET_MU[v])}% of his usual {v}" for v in vols)
+            mu, back, note = {v: RET_MU[v] for v in vols}, None, f"Back after missing {R['gap']} games: first game back gets {usual} (how 600+ returns went in 2020-26)"
+            st = R["news"]
+            if "start" in st and "lim" not in st:
+                mu, back = {v: NEWS_MU["start"] for v in vols}, 1.0
+                note = f"Back after missing {R['gap']} games and named the starter in the news: his full usual role"
+            elif "lim" in st and "start" not in st:
+                mu, back = {v: NEWS_MU["lim"] for v in vols}, NEWS_MU["lim"]
+                note = f"Back after missing {R['gap']} games, eased back in per the news: {round(100 * NEWS_MU['lim'])}% of his usual role"
+            R["back"] = back
+            fm = players[pid].get("form") or {}
+            fm.pop("sf", None), fm.pop("st", None)   # his snap trend spans the injury: not used, not shown
+            proj = players[pid]["proj"][gid]
+            chg = {}
+            for v in vols:
+                a = proj[v]["mean"]
+                scale_proj(proj, v, mu[v])
+                chg[VOL_KEY[v]] = [round(a, 2), round(proj[v]["mean"], 2)]
+            players[pid].setdefault("adj", {}).setdefault(gid, []).append({
+                "kind": "return", "txt": note, "f": {VOL_KEY[v]: mu[v] for v in vols}, "chg": chg,
+                "why": R["why"], "news": list({it["h"]: _story(it) for kk, it in R["news"].items() if kk in ("ret", "start", "lim")}.values())[:2]})
+            touched.add(pid)
+        # the fill-ins: same position group, played at least 2 of the games he missed
+        for v in RET_VOL[R["pos"]]:
+            ms = []
+            for m in listed:
+                if m == pid or players[m]["pos"] not in RET_GROUP[R["pos"]] or gid not in players[m]["proj"]:
+                    continue
+                on = [x for x in R["gap_wks"] if (m, x, v) in shares][:4]
+                if len(on) < 2:
+                    continue
+                wo = sum(shares[(m, x, v)] for x in on) / len(on)
+                both = [x for x in R["pre_wks"] if (m, x, v) in shares]
+                wi = sum(shares[(m, x, v)] for x in both) / len(both) if both else None
+                if wo >= 0.05:
+                    ms.append((m, wo, wi))
+            if not ms or R["pre"].get(v, 0) <= 0:
+                continue
+            gains = [max(0.0, wo - wi) if wi is not None else None for _, wo, wi in ms]
+            if all(gg is not None for gg in gains) and sum(gains) > 0:
+                wts = [gg / sum(gains) for gg in gains]
+            else:
+                wts = [wo / sum(x[1] for x in ms) for _, wo, _ in ms]
+            for (m, wo, wi), wt in zip(ms, wts):
+                # named the starter: he takes all of his old share back (eased in: less)
+                c = min(1.0, (R.get("back") or RET_SHARE[v][k]) * R["pre"][v] * wt / wo)
+                r = 1 - RET_THETA[v][k] * c
+                if r > 0.98:
+                    continue
+                a = players[m]["proj"][gid][v]["mean"]
+                scale_proj(players[m]["proj"][gid], v, r)
+                back = "is back" if k == 0 else f"is {k} game{'s' if k > 1 else ''} back"
+                had = f"{round(100 * wo)}% of the team's {v} while he was out" + (f", {round(100 * wi)}% with him" if wi is not None else "")
+                players[m].setdefault("adj", {}).setdefault(gid, []).append({
+                    "kind": "fill", "by": pid, "f": {VOL_KEY[v]: round(r, 3)},
+                    "chg": {VOL_KEY[v]: [round(a, 2), round(players[m]["proj"][gid][v]["mean"], 2)]},
+                    "txt": f"{name} {back}: {v} {round(100 * (r - 1))}% ({had})"})
+                touched.add(m)
+    return touched
+
+
+def apply_news(listed, gid, players, news, since, touched):
+    """Nudge players whose role news says up or down (not the ones the return math already moved)."""
+    for pid in listed:
+        p = players[pid]
+        if pid in touched or p["pos"] not in RET_VOL or gid not in p["proj"]:
+            continue
+        sig = news_roles(news.get(pid), since)
+        up, down = "start" in sig, "down" in sig or "lim" in sig
+        if up == down:
+            continue
+        r = NEWS_UP if up else NEWS_DOWN
+        it = sig["start"] if up else sig.get("down") or sig["lim"]
+        chg = {}
+        for v in RET_VOL[p["pos"]]:
+            a = p["proj"][gid][v]["mean"]
+            scale_proj(p["proj"][gid], v, r)
+            chg[VOL_KEY[v]] = [round(a, 2), round(p["proj"][gid][v]["mean"], 2)]
+        p.setdefault("adj", {}).setdefault(gid, []).append({
+            "kind": "news", "f": {VOL_KEY[v]: r for v in RET_VOL[p["pos"]]}, "news": [_story(it)], "chg": chg,
+            "txt": f"{'Bigger' if up else 'Smaller'} role in the news: {'+' if up else '-'}{round(abs(r - 1) * 100)}% on his volume (a set nudge, not backtested)"})
+
+
 def form_line(pid, games, prev_raw, snaps, season, week, pos):
     """Last 4 vs. last 12 games (across seasons) for his main stats and snap share, for the page's
     form notes. Only the snap-share trend moves the projection (see SNAP_DOWN); streaks in the
@@ -667,6 +924,7 @@ def build(season):
     prev_raw = load_prev(season)
     prev = prev_summary(prev_raw)
     snaps = load_snaps(season), load_snaps(season - 1)
+    rosters, news = load_rosters(season), load_news()
     calib = None   # spreads come from model_params.json, fitted on past seasons
 
     inj_latest = {}
@@ -743,7 +1001,33 @@ def build(season):
                     st = snap_trend(snap_series(snaps, pid, season, w))
                     players[pid]["proj"][r.game_id] = project_player(pg, players[pid]["pos"], opp, teams, lg, gs, cvs, rates, calib,
                                                                      prev.get(pid), depth=pid not in regular, snap_t=st)
-                    game["players"][tm].append(pid)
+                # players back from injury, and the news about roles since the team's last game
+                if not game.get("final"):
+                    try:
+                        shares, wks = team_shares(stats, team_stats, tm, w)
+                        rets = None
+                    except Exception as e:
+                        print(f"team shares unavailable for {tm}: {e}")
+                        shares, wks, rets = {}, [], []
+                    played = sched[((sched.home_team == tm) | (sched.away_team == tm)) & sched.home_score.notna()]
+                    since = (pd.Timestamp(played.gameday.max()) + pd.Timedelta(hours=18)).timestamp() if len(played) else 0
+                    if rets is None:
+                        try:
+                            rets = [R for R in find_returns(stats, tm, w, wks, shares, inj, rosters, news, since)
+                                    if players.get(R["pid"], {}).get("team") == tm]
+                        except Exception as e:
+                            print(f"return check skipped for {tm}: {type(e).__name__}: {e}")
+                            rets = []
+
+                    def project(pid, opp=opp, gs=gs):
+                        pg = stats[(stats.player_id == pid) & (stats.week < w)].sort_values("week")
+                        return project_player(pg, players[pid]["pos"], opp, teams, lg, gs, cvs, rates, calib, prev.get(pid))
+                    try:
+                        touched = apply_returns(rets, tm, r.game_id, listed, players, shares, project)
+                        apply_news(listed, r.game_id, players, news, since, touched)
+                    except Exception as e:   # never let the news side stop a refresh
+                        print(f"return/news adjustment skipped for {tm} {r.game_id}: {type(e).__name__}: {e}")
+                game["players"][tm].extend(listed)
             games.append(game)
 
     used = {pid for g in games for side in g["players"].values() for pid in side}

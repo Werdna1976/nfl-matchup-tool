@@ -730,6 +730,7 @@ function adjustForInjuries() {
   for (const g of DATA.games) {
     for (const tm of [g.home, g.away]) {
       const roster = (g.players[tm] || []).map((pid) => DATA.players[pid]);
+      undoReturns(g, roster);
       for (const m of roster) {
         const w = ROLES.outWeight(m);
         if (!w) continue;
@@ -799,6 +800,55 @@ function adjustForInjuries() {
       for (const p of roster) if (ROLES.outWeight(p) >= 1) ROLES.zeroOut(p, g.id);
     }
   }
+}
+
+// ---------------------------------------------------------------- players back from injury
+
+// The data file already has players coming back from injury in it (scripts/build_data.py): the
+// returning player at his first-game-back share, the fill-ins with some of their volume taken
+// back, and role news (named the starter, benched) as a small nudge. Each change is listed in
+// p.adj[game id] with its reason and story. If the live injury report now has the returning
+// player out, his fill-ins get their volume back here (Doubtful: 75% of it).
+function undoReturns(g, roster) {
+  for (const p of roster) {
+    for (const a of p.adj?.[g.id] || []) {
+      a.off = false;
+      if (a.kind !== "fill") continue;
+      const m = DATA.players[a.by], w = m ? ROLES.outWeight(m) : 0;
+      if (!w) continue;
+      for (const [vol, f] of Object.entries(a.f || {})) {
+        if (!(f > 0)) continue;
+        for (const k of RIDES[vol]) ROLES.scale(p.proj[g.id][k], (f + w * (1 - f)) / f);
+      }
+      a.off = w >= 1;
+      ROLES.because(p, g.id, m);
+    }
+  }
+}
+
+// What moved this player's projection for news or a teammate's return, for the notes and panels
+const roleAdj = (p, gid) => (p.adj?.[gid] || []).filter((a) => !a.off);
+const VOL_WORD = { car: "carries", tgt: "targets" };
+const storyText = (n) => `${n.s ? `${n.s}: ` : ""}“${n.h}”`;
+function roleChips(p, gid) {
+  return roleAdj(p, gid).map((a) => {
+    const chg = Object.entries(a.chg || {}).filter(([, [x, y]]) => Math.abs(y - x) >= 0.05).map(([k, [x, y]]) => `${VOL_WORD[k]} ${fmt(x, 1)} → ${fmt(y, 1)}`).join(", ");
+    const head = a.kind === "return" ? "Back from injury" : a.kind === "fill" ? "Teammate back" : "Role news";
+    const src = (a.news || [])[0];
+    const up = Object.values(a.f || {}).some((f) => f > 1);
+    return { kind: a.kind === "return" ? "info" : up ? "good" : "bad",
+      text: `${head}: ${a.txt}${chg ? `. ${chg}` : ""}${src ? ` (${storyText(src)})` : ""}` };
+  });
+}
+// The player window's list: each change, the evidence, and links to the stories
+function roleList(p, gid) {
+  const items = roleAdj(p, gid);
+  if (!items.length) return "";
+  return `<div class="panel role-adj"><div class="panel-head"><h3>Why his projection moved</h3><span class="muted small">Players back from injury and role news since his team's last game, built into every number on this page</span></div>
+    <ul class="news-list">${items.map((a) => `<li><div><b>${esc(a.txt)}</b></div>
+      ${Object.entries(a.chg || {}).map(([k, [x, y]]) => `<div class="small">${VOL_WORD[k]}: ${fmt(x, 1)} → <b>${fmt(y, 1)}</b></div>`).join("")}
+      ${(a.why || []).map((w) => `<div class="muted small">${esc(w)}</div>`).join("")}
+      ${(a.news || []).map((n) => `<div class="muted small">${/^https?:\/\//i.test(n.u || "") ? `<a href="${esc(n.u)}" target="_blank" rel="noopener">${esc(n.h)}</a>` : esc(n.h)}${n.s ? ` · ${esc(n.s)}` : ""}${n.t ? ` · ${NOTES.ago(n.t * 1000)}` : ""}</div>`).join("")}</li>`).join("")}</ul></div>`;
 }
 
 // ---------------------------------------------------------------- team totals
@@ -921,6 +971,7 @@ function playerNotes(p, g) {
     out.push({ kind: isOut(p) ? "bad" : "warn", text: `${p.inj.status}${why ? `: ${why}` : ""}` });
     if (isOut(p)) return out;
   }
+  out.push(...roleChips(p, g.id));
   const k = MAIN_STAT[p.pos], d = pr[k], name = STATS[k].label.toLowerCase();
   if (d.mean >= 30) {   // skip depth players: one note on the starters is enough
     if (d.f >= 1.1) out.push({ kind: "good", text: `Good matchup: ${opp} gives up ${name} (+${Math.round((d.f - 1) * 100)}%)` });
@@ -1301,7 +1352,7 @@ function renderPlayerView(pid, g) {
         ${(() => { const ns = [...playerNotes(p, g), ...teamNotes(g, p.team)]; return ns.length ? `<div class="note-chips" style="margin-top:6px">${ns.map(NOTES.chip).join("")}</div>` : ""; })()}</div>
       <button class="x" aria-label="Close">×</button>
     </div>
-
+    ${roleList(p, g.id)}
     <div class="panel">
       <div class="panel-head"><h3>Recent games</h3>
         <div class="tabs" style="margin:0">${[3, 5, 99].map((n) => `<button class="chip" data-n="${n}" aria-pressed="${n === pv.n}">${n === 99 ? "All" : `Last ${n}`}</button>`).join("")}</div></div>
@@ -1400,6 +1451,7 @@ TREND.config = {
     const rest = rd == null ? "" : rd <= 5 ? `Short week: ${rd} days since his team's last game.` : rd >= 12 ? `Off a bye: ${rd} days of rest.` : `${rd} days since his team's last game.`;
     return TREND.form(rows, fm.n ? `over his last ${fm.n} games, last season included` : "",
       "A change in snap share has carried into the next game in 2024-26 backtests, so it moves the projection (down 3.5% per 10% drop, up 2% per 10% rise). Streaks in the stat itself haven't beaten the projection, which already leans on recent games.", rest)
+      + (roleAdj(p, l.gid).length ? `<h3>Why the projection moved</h3><div class="note-chips">${roleChips(p, l.gid).map(NOTES.chip).join("")}</div>` : "")
       + `<h3>News, last 7 days</h3>${NOTES.newsList(NOTES.newsFor(p.name, p.pid))}`;
   },
 };
@@ -1462,7 +1514,8 @@ function openHow() {
       <p><b>Matchup.</b> Yardage gets scaled by how many yards the opponent allows per pass, per carry, and per target to that position (WR, TE, RB), compared to the league. Small samples are pulled toward average so one blowout doesn't swing things too far. Touchdowns scale with the team's implied points, blended with the league TD rate so a player who hasn't scored yet still has a real chance.</p>
       <p><b>Ranges.</b> Bigger roles swing less in relative terms, so the spread depends on the size of the projection, lightly blended with the player's own game-to-game swing. Each stat mixes a "normal game" curve with a small "dud game" curve (hurt early, benched, schemed out), so the upper tail isn't stretched to cover those games. Every weight was fitted on 2022–2024 game logs and checked on 2025 and this season: results land above the model's 90th and 95th percentiles about 10% and 5% of the time, including for top players. Touchdowns and interceptions use count odds (Poisson), pulled toward the league rate for the player's volume. Totals and spreads use the market line with a 13-point typical miss, nudged 20% toward a stats-only score model.</p>
       <p><b>Teammates who are out.</b> When a player is listed Out (or Doubtful, counted at 75%), his carries go to the other backs and most of his targets to the other receivers, weighted toward his position. A starting QB out hands his volume to the backup at lower efficiency. Where a teammate has played games without him, those real numbers are blended in. Changed numbers carry a ▲ or ▼.</p>
-      <p><b>What it doesn't know.</b> Injuries during the week until the page refreshes, weather beyond what's listed, coaching changes, and snap-count news. A player listed Questionable could be on a snap limit.</p>
+      <p><b>Players back from injury.</b> A back or receiver who missed 2+ games hurt is put back on the page once the injury report (no game status, or Questionable) or a news story says he plays. In 600+ returns since 2020 the first game back gave him about 85% of his old carries and 83% of his targets, and the teammates who filled in gave back part of what they gained (their projections otherwise ride their fill-in games); fill-in backs' carry misses dropped about 18%. News that names him the starter gives him his full role; a snap count, 60%. Other role news (named the starter, benched, losing work) moves a player's volume 15%, a set nudge that can't be backtested. Every change is listed in the player's window with its story.</p>
+      <p><b>What it doesn't know.</b> Injuries during the week until the page refreshes, weather beyond what's listed, coaching changes, and role news the keyword rules miss. A player listed Questionable could be on a snap limit.</p>
       <p><b>Using it for alt lines.</b> If the model says 80% and Polymarket charges 70¢, that's a possible edge. If it charges 85¢, it isn't. Multiplying many 80% legs drops fast: five of them is about 33%.</p>
       <p><b>Players add up to the team.</b> Each team's players are scaled so they add up to one team line: passing, receiving, rushing, and touchdowns meet halfway between a team-stats line and the players' own sum (see <b>How the players add up</b> on the Lines &amp; matchup tab). Tested on past seasons, this made team totals much closer and didn't hurt the player projections.</p>
       <p><b>Polymarket bets.</b> From the day before kickoff (or within 24 hours of the start) each game's <b>Bets</b> tab reads Polymarket's player and game markets, priced at what a $20 bet would really cost. <b>Mispriced props</b> are single bets where the model's fair price is at least 3¢ above Polymarket's, each pressure-tested (the model's track record, Polymarket's whole line ladder, the sportsbook line, injuries, news, and price moves) and graded Verified, Caution, or Flagged; flagged bets stay listed with their likely issue named. <b>Negative correlation multipliers</b> are pairs that land together less often than their chances multiplied, so a parlay builder that adjusts for the link should pay more than straight multiplication. They come from simulating the game 6,000 times with weights fitted to past seasons (a QB's passing yards and his top receiver's yards +0.41, opposing lead backs' carries −0.29, a lead back's carries and his own QB's attempts −0.11). Only pairs with both legs priced at or below fair are listed, each with its break-even payout and how much more than straight it needs to pay. <b>Lottery tickets</b> are long shots priced at or below their chance. Click any player's bet, or its <b>Last 10</b> button, to see his last 10 games in a side panel.</p>
