@@ -962,6 +962,15 @@ function renderTeamTotals(g) {
 
 // ---------------------------------------------------------------- player notes
 
+// Partial games (under half his usual snaps: left hurt, ejected, rested in a blowout) in his last 4.
+// They stay in the averages: dropping them didn't make 2023-26 projections more accurate
+// (scripts/partial_study.py), so this only says they're there and what the share is without them.
+function partialNote(fm) {
+  if (!fm?.part?.length) return "";
+  const wk = fm.part.map((x) => `${x.ly ? "last season " : ""}wk ${x.w} ${x.snp}%`).join(", ");
+  return `; includes ${fm.part.length === 1 ? "a partial game" : `${fm.part.length} partial games`} (${wk})${fm.snp4x != null ? `, ${Math.round(fm.snp4x)}% without` : ""}`;
+}
+
 // Reasons a player may have a good or bad game. Matchup and teammates who are out are
 // already in the projections; streaks are flagged here but not built in.
 function playerNotes(p, g) {
@@ -981,8 +990,11 @@ function playerNotes(p, g) {
   // backtests, so it is built into the projection (sf); shown here with what it changed
   const fm = p.form;
   if (fm?.st != null && Math.abs(fm.st) >= 0.1 && fm.sf) {
-    out.push({ kind: fm.st > 0 ? "good" : "bad", text: `Snaps ${fm.st > 0 ? "up" : "down"}: ${Math.round(fm.snp4)}% of snaps last 4 vs ${Math.round(fm.snp12)}% last 12 (projection ${fm.sf >= 1 ? "+" : "−"}${Math.round(Math.abs(fm.sf - 1) * 100)}%)` });
+    out.push({ kind: fm.st > 0 ? "good" : "bad", text: `Snaps ${fm.st > 0 ? "up" : "down"}: ${Math.round(fm.snp4)}% of snaps last 4 vs ${Math.round(fm.snp12)}% last 12 (projection ${fm.sf >= 1 ? "+" : "−"}${Math.round(Math.abs(fm.sf - 1) * 100)}%)${partialNote(fm)}` });
   }
+  // his latest game was a partial one (left early, ejected, rested): context, not modeled
+  const lp = fm?.part_last && fm.part?.[fm.part.length - 1];
+  if (lp) out.push({ kind: "warn", text: `Partial game last time: ${lp.snp}% of snaps vs his usual ${lp.med}%. In 2023-26, players who played the next game averaged 14% under the projection, but it swung by season, so it isn't built in.` });
   // Hot or cold in the stat itself, last 4 vs last 12: shown for context only. In 2024-26
   // backtests a streak like this didn't beat the projection (the model already leans on recent games).
   if (fm?.l4?.[k] != null && fm.n >= 8) {
@@ -1431,6 +1443,7 @@ TREND.config = {
   group: (k) => trendStat(k).group,
   when: (r, split) => (split ? [`Wk ${r.w}`, r.opp] : `Wk ${r.w} ${r.opp}`),
   log: (p) => p.log,
+  flag: (r) => (r.part ? `Partial game: ${r.snp}% of snaps vs his usual ${r.part}% (left early, ejected, or rested)` : ""),
   teamLine: (p) => `${DATA.team_names[p.team] || p.team} ${p.pos} · ${p.log.length} games this season${p.inj?.status ? ` · ${p.inj.status}` : ""}`,
   proj: (p, l, k) => (k === "anytd" ? null : p.proj?.[l.gid]?.[k]?.mean ?? null),
   more: (l) => { const g = DATA.games.find((x) => x.id === l.gid); if (g) openPlayer(l.pid, g); },
@@ -1446,7 +1459,9 @@ TREND.config = {
       if (p.pos === "RB" && k !== "tgt") rows.push({ label: STATS.tgt.label, a: l4("tgt"), b: l12("tgt"), dec: 1 });
     }
     if (fm.snp4 != null) rows.push({ label: "Share of offensive snaps", a: fm.snp4, b: fm.snp12, dec: 0, unit: "%",
-      note: fm.sf ? `projection ${fm.sf >= 1 ? "+" : "−"}${Math.round(Math.abs(fm.sf - 1) * 100)}% for this` : "" });
+      note: (fm.sf ? `projection ${fm.sf >= 1 ? "+" : "−"}${Math.round(Math.abs(fm.sf - 1) * 100)}% for this` : "") + partialNote(fm) });
+    if (fm.part?.length) rows.push({ label: "Snaps, last 4 without partial games", a: fm.snp4x, b: fm.snp12, dec: 0, unit: "%",
+      note: "for reference: the projection keeps those games in (dropping them backtested no better)" });
     const rd = g?.rest?.[p.team];
     const rest = rd == null ? "" : rd <= 5 ? `Short week: ${rd} days since his team's last game.` : rd >= 12 ? `Off a bye: ${rd} days of rest.` : `${rd} days since his team's last game.`;
     return TREND.form(rows, fm.n ? `over his last ${fm.n} games, last season included` : "",
