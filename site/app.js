@@ -27,6 +27,7 @@ const TREND_STATS = {
   rfd: { label: "Rushing first downs", short: "Rush 1st", group: "Rushing" },
   r10: { label: "Runs of 10+ yards", short: "10+ runs", group: "Rushing" },
   tsh: { label: "Share of team targets (%)", short: "Tgt %", group: "Receiving" },
+  snp: { label: "Share of offensive snaps (%)", short: "Snap %", group: "Usage" },
   ray: { label: "Receiving air yards", short: "Rec air", group: "Receiving" },
   yac: { label: "Yards after catch", short: "YAC", group: "Receiving" },
   cfd: { label: "Receiving first downs", short: "Rec 1st", group: "Receiving" },
@@ -37,10 +38,10 @@ const TREND_STATS = {
 const trendStat = (k) => TREND_STATS[k] || STATS[k];
 // the panel's columns by position: the full stat line plus the extras, grouped
 const TREND_KEYS = {
-  QB: ["att", "cmp", "pyd", "ptd", "int", "sk", "pfd", "p20", "pay", "car", "ryd", "rtd", "rfd", "r10", "fl"],
-  RB: ["car", "ryd", "rtd", "rfd", "r10", "tgt", "rec", "yds", "td", "tsh", "yac", "cfd", "c20", "rry", "fl"],
-  WR: ["tgt", "rec", "yds", "td", "tsh", "ray", "yac", "cfd", "c20", "car", "ryd", "rtd", "rry", "fl"],
-  TE: ["tgt", "rec", "yds", "td", "tsh", "ray", "yac", "cfd", "c20", "car", "ryd", "rtd", "rry", "fl"],
+  QB: ["snp", "att", "cmp", "pyd", "ptd", "int", "sk", "pfd", "p20", "pay", "car", "ryd", "rtd", "rfd", "r10", "fl"],
+  RB: ["snp", "car", "ryd", "rtd", "rfd", "r10", "tgt", "rec", "yds", "td", "tsh", "yac", "cfd", "c20", "rry", "fl"],
+  WR: ["snp", "tgt", "rec", "yds", "td", "tsh", "ray", "yac", "cfd", "c20", "car", "ryd", "rtd", "rry", "fl"],
+  TE: ["snp", "tgt", "rec", "yds", "td", "tsh", "ray", "yac", "cfd", "c20", "car", "ryd", "rtd", "rry", "fl"],
 };
 // Full stat line for each position: QBs pass and run, backs run and catch, receivers catch and run
 const POS_STATS = {
@@ -300,6 +301,7 @@ async function refreshInjuries() {
     }
   } catch (e) { /* keep the file's injury report */ }
   try { await NOTES.news("football/nfl"); } catch (e) { /* headlines are optional */ }
+  try { await NOTES.stories("nfl"); } catch (e) { /* the news file is optional */ }
   adjustForInjuries();
 }
 
@@ -325,7 +327,9 @@ function renderMeta() {
 async function loadData() {
   const r = await fetch(`data/data.json?t=${Date.now()}`, { cache: "no-store" });
   if (!r.ok) throw new Error(r.status);
-  return r.json();
+  const d = await r.json();
+  for (const [id, p] of Object.entries(d.players || {})) p.pid = id;   // news is filed by player id
+  return d;
 }
 
 // ---------------------------------------------------------------- boot
@@ -726,6 +730,7 @@ function adjustForInjuries() {
   for (const g of DATA.games) {
     for (const tm of [g.home, g.away]) {
       const roster = (g.players[tm] || []).map((pid) => DATA.players[pid]);
+      undoReturns(g, roster);
       for (const m of roster) {
         const w = ROLES.outWeight(m);
         if (!w) continue;
@@ -795,6 +800,55 @@ function adjustForInjuries() {
       for (const p of roster) if (ROLES.outWeight(p) >= 1) ROLES.zeroOut(p, g.id);
     }
   }
+}
+
+// ---------------------------------------------------------------- players back from injury
+
+// The data file already has players coming back from injury in it (scripts/build_data.py): the
+// returning player at his first-game-back share, the fill-ins with some of their volume taken
+// back, and role news (named the starter, benched) as a small nudge. Each change is listed in
+// p.adj[game id] with its reason and story. If the live injury report now has the returning
+// player out, his fill-ins get their volume back here (Doubtful: 75% of it).
+function undoReturns(g, roster) {
+  for (const p of roster) {
+    for (const a of p.adj?.[g.id] || []) {
+      a.off = false;
+      if (a.kind !== "fill") continue;
+      const m = DATA.players[a.by], w = m ? ROLES.outWeight(m) : 0;
+      if (!w) continue;
+      for (const [vol, f] of Object.entries(a.f || {})) {
+        if (!(f > 0)) continue;
+        for (const k of RIDES[vol]) ROLES.scale(p.proj[g.id][k], (f + w * (1 - f)) / f);
+      }
+      a.off = w >= 1;
+      ROLES.because(p, g.id, m);
+    }
+  }
+}
+
+// What moved this player's projection for news or a teammate's return, for the notes and panels
+const roleAdj = (p, gid) => (p.adj?.[gid] || []).filter((a) => !a.off);
+const VOL_WORD = { car: "carries", tgt: "targets" };
+const storyText = (n) => `${n.s ? `${n.s}: ` : ""}“${n.h}”`;
+function roleChips(p, gid) {
+  return roleAdj(p, gid).map((a) => {
+    const chg = Object.entries(a.chg || {}).filter(([, [x, y]]) => Math.abs(y - x) >= 0.05).map(([k, [x, y]]) => `${VOL_WORD[k]} ${fmt(x, 1)} → ${fmt(y, 1)}`).join(", ");
+    const head = a.kind === "return" ? "Back from injury" : a.kind === "fill" ? "Teammate back" : "Role news";
+    const src = (a.news || [])[0];
+    const up = Object.values(a.f || {}).some((f) => f > 1);
+    return { kind: a.kind === "return" ? "info" : up ? "good" : "bad",
+      text: `${head}: ${a.txt}${chg ? `. ${chg}` : ""}${src ? ` (${storyText(src)})` : ""}` };
+  });
+}
+// The player window's list: each change, the evidence, and links to the stories
+function roleList(p, gid) {
+  const items = roleAdj(p, gid);
+  if (!items.length) return "";
+  return `<div class="panel role-adj"><div class="panel-head"><h3>Why his projection moved</h3><span class="muted small">Players back from injury and role news since his team's last game, built into every number on this page</span></div>
+    <ul class="news-list">${items.map((a) => `<li><div><b>${esc(a.txt)}</b></div>
+      ${Object.entries(a.chg || {}).map(([k, [x, y]]) => `<div class="small">${VOL_WORD[k]}: ${fmt(x, 1)} → <b>${fmt(y, 1)}</b></div>`).join("")}
+      ${(a.why || []).map((w) => `<div class="muted small">${esc(w)}</div>`).join("")}
+      ${(a.news || []).map((n) => `<div class="muted small">${/^https?:\/\//i.test(n.u || "") ? `<a href="${esc(n.u)}" target="_blank" rel="noopener">${esc(n.h)}</a>` : esc(n.h)}${n.s ? ` · ${esc(n.s)}` : ""}${n.t ? ` · ${NOTES.ago(n.t * 1000)}` : ""}</div>`).join("")}</li>`).join("")}</ul></div>`;
 }
 
 // ---------------------------------------------------------------- team totals
@@ -917,16 +971,24 @@ function playerNotes(p, g) {
     out.push({ kind: isOut(p) ? "bad" : "warn", text: `${p.inj.status}${why ? `: ${why}` : ""}` });
     if (isOut(p)) return out;
   }
+  out.push(...roleChips(p, g.id));
   const k = MAIN_STAT[p.pos], d = pr[k], name = STATS[k].label.toLowerCase();
   if (d.mean >= 30) {   // skip depth players: one note on the starters is enough
     if (d.f >= 1.1) out.push({ kind: "good", text: `Good matchup: ${opp} gives up ${name} (+${Math.round((d.f - 1) * 100)}%)` });
     else if (d.f <= 0.9) out.push({ kind: "bad", text: `Tough matchup: ${opp} limits ${name} (−${Math.round((1 - d.f) * 100)}%)` });
   }
-  // hot or cold: last 3 games against the season
-  if (p.log.length >= 5) {
-    const a = avg(p.log.slice(-3).map((r) => r[k])), b = avg(p.log.map((r) => r[k])), min = k === "pyd" ? 40 : 15;
-    if (b >= 15 && a >= 1.3 * b && a - b >= min) out.push({ kind: "good", text: `Hot: ${Math.round(a)} ${name} a game last 3 (season ${Math.round(b)})` });
-    else if (b >= 15 && a <= 0.7 * b && b - a >= min) out.push({ kind: "bad", text: `Cold: ${Math.round(a)} ${name} a game last 3 (season ${Math.round(b)})` });
+  // Snap share, last 4 games vs. last 12: the one trend that has beaten the stats-only average in
+  // backtests, so it is built into the projection (sf); shown here with what it changed
+  const fm = p.form;
+  if (fm?.st != null && Math.abs(fm.st) >= 0.1 && fm.sf) {
+    out.push({ kind: fm.st > 0 ? "good" : "bad", text: `Snaps ${fm.st > 0 ? "up" : "down"}: ${Math.round(fm.snp4)}% of snaps last 4 vs ${Math.round(fm.snp12)}% last 12 (projection ${fm.sf >= 1 ? "+" : "−"}${Math.round(Math.abs(fm.sf - 1) * 100)}%)` });
+  }
+  // Hot or cold in the stat itself, last 4 vs last 12: shown for context only. In 2024-26
+  // backtests a streak like this didn't beat the projection (the model already leans on recent games).
+  if (fm?.l4?.[k] != null && fm.n >= 8) {
+    const a = fm.l4[k], b = fm.l12[k], min = k === "pyd" ? 40 : 15;
+    if (b >= 15 && a >= 1.3 * b && a - b >= min) out.push({ kind: "info", text: `Hot: ${Math.round(a)} ${name} a game last 4 vs ${Math.round(b)} last 12 (already in the projection)` });
+    else if (b >= 15 && a <= 0.7 * b && b - a >= min) out.push({ kind: "info", text: `Cold: ${Math.round(a)} ${name} a game last 4 vs ${Math.round(b)} last 12 (already in the projection)` });
   }
   // teammates ruled out: how this player did in past games without them
   for (const pid of g.players[p.team] || []) {
@@ -947,16 +1009,21 @@ function playerNotes(p, g) {
     const b = p.base[g.id];
     out.push({ kind: (dv || dy) > 0 ? "good" : "bad", text: `Projection ${(dv || dy) > 0 ? "up" : "down"} for ${p.why[g.id].join(", ")} out: ${fmt(b[dk].mean, 1)} → ${fmt(pr[dk].mean, 1)} ${STATS[dk].short.toLowerCase()}, ${Math.round(b[MAIN_STAT[p.pos]].mean)} → ${Math.round(pr[MAIN_STAT[p.pos]].mean)} ${STATS[MAIN_STAT[p.pos]].short.toLowerCase()}` });
   }
-  for (const n of NOTES.newsFor(p.name).slice(0, 2)) out.push({ kind: "info", text: `News: ${n.headline}` });
+  out.push(...NOTES.newsChips(NOTES.newsFor(p.name, p.pid), 3));
   return out;
 }
 
-// Notes for a whole team: scoring expectations and weather
+// Notes for a whole team: scoring expectations, weather, rest, and team stories (morale, trades)
 function teamNotes(g, tm) {
   const out = [], pts = tm === g.home ? g.model.home_pts : g.model.away_pts, avgPts = DATA.teams[tm].off.ppg;
   if (pts >= avgPts + 4) out.push({ kind: "good", text: `${tm} implied for ${fmt(pts, 1)} points, above its ${fmt(avgPts, 1)} average: TD chances up` });
   else if (pts <= avgPts - 4) out.push({ kind: "bad", text: `${tm} implied for ${fmt(pts, 1)} points, below its ${fmt(avgPts, 1)} average` });
   if (g.wind != null && g.wind >= 15 && !/dome|closed/i.test(g.roof || "")) out.push({ kind: "bad", text: `Wind ${g.wind} mph: passing and kicking suffer` });
+  // rest: context only, not in the projections
+  const rd = g.rest?.[tm], ro = g.rest?.[tm === g.home ? g.away : g.home];
+  if (rd != null && rd <= 5) out.push({ kind: "warn", text: `Short week: ${rd} days since its last game${ro != null && ro >= 7 ? ` (opponent had ${ro})` : ""}` });
+  else if (rd != null && rd >= 12) out.push({ kind: "info", text: `Off a bye: ${rd} days of rest` });
+  out.push(...NOTES.newsChips(NOTES.teamNews(tm), 2));
   return out;
 }
 
@@ -1285,7 +1352,7 @@ function renderPlayerView(pid, g) {
         ${(() => { const ns = [...playerNotes(p, g), ...teamNotes(g, p.team)]; return ns.length ? `<div class="note-chips" style="margin-top:6px">${ns.map(NOTES.chip).join("")}</div>` : ""; })()}</div>
       <button class="x" aria-label="Close">×</button>
     </div>
-
+    ${roleList(p, g.id)}
     <div class="panel">
       <div class="panel-head"><h3>Recent games</h3>
         <div class="tabs" style="margin:0">${[3, 5, 99].map((n) => `<button class="chip" data-n="${n}" aria-pressed="${n === pv.n}">${n === 99 ? "All" : `Last ${n}`}</button>`).join("")}</div></div>
@@ -1367,6 +1434,26 @@ TREND.config = {
   teamLine: (p) => `${DATA.team_names[p.team] || p.team} ${p.pos} · ${p.log.length} games this season${p.inj?.status ? ` · ${p.inj.status}` : ""}`,
   proj: (p, l, k) => (k === "anytd" ? null : p.proj?.[l.gid]?.[k]?.mean ?? null),
   more: (l) => { const g = DATA.games.find((x) => x.id === l.gid); if (g) openPlayer(l.pid, g); },
+  extra: (p, l) => {
+    const fm = p.form || {}, g = DATA.games.find((x) => x.id === l.gid), k = l.key;
+    const l4 = (x) => (x === "anytd" ? (fm.l4?.rtd ?? 0) + (fm.l4?.td ?? 0) : fm.l4?.[x]);
+    const l12 = (x) => (x === "anytd" ? (fm.l12?.rtd ?? 0) + (fm.l12?.td ?? 0) : fm.l12?.[x]);
+    const use = p.pos === "QB" ? "att" : p.pos === "RB" ? "car" : "tgt";
+    const rows = [];
+    if (fm.l4) {
+      rows.push({ label: trendStat(k).label, a: l4(k), b: l12(k), dec: STATS[k]?.dec ?? 1, hl: true });
+      if (use !== k) rows.push({ label: STATS[use].label, a: l4(use), b: l12(use), dec: 1 });
+      if (p.pos === "RB" && k !== "tgt") rows.push({ label: STATS.tgt.label, a: l4("tgt"), b: l12("tgt"), dec: 1 });
+    }
+    if (fm.snp4 != null) rows.push({ label: "Share of offensive snaps", a: fm.snp4, b: fm.snp12, dec: 0, unit: "%",
+      note: fm.sf ? `projection ${fm.sf >= 1 ? "+" : "−"}${Math.round(Math.abs(fm.sf - 1) * 100)}% for this` : "" });
+    const rd = g?.rest?.[p.team];
+    const rest = rd == null ? "" : rd <= 5 ? `Short week: ${rd} days since his team's last game.` : rd >= 12 ? `Off a bye: ${rd} days of rest.` : `${rd} days since his team's last game.`;
+    return TREND.form(rows, fm.n ? `over his last ${fm.n} games, last season included` : "",
+      "A change in snap share has carried into the next game in 2024-26 backtests, so it moves the projection (down 3.5% per 10% drop, up 2% per 10% rise). Streaks in the stat itself haven't beaten the projection, which already leans on recent games.", rest)
+      + (roleAdj(p, l.gid).length ? `<h3>Why the projection moved</h3><div class="note-chips">${roleChips(p, l.gid).map(NOTES.chip).join("")}</div>` : "")
+      + `<h3>News, last 7 days</h3>${NOTES.newsList(NOTES.newsFor(p.name, p.pid))}`;
+  },
 };
 
 // ---------------------------------------------------------------- slip
@@ -1427,7 +1514,8 @@ function openHow() {
       <p><b>Matchup.</b> Yardage gets scaled by how many yards the opponent allows per pass, per carry, and per target to that position (WR, TE, RB), compared to the league. Small samples are pulled toward average so one blowout doesn't swing things too far. Touchdowns scale with the team's implied points, blended with the league TD rate so a player who hasn't scored yet still has a real chance.</p>
       <p><b>Ranges.</b> Bigger roles swing less in relative terms, so the spread depends on the size of the projection, lightly blended with the player's own game-to-game swing. Each stat mixes a "normal game" curve with a small "dud game" curve (hurt early, benched, schemed out), so the upper tail isn't stretched to cover those games. Every weight was fitted on 2022–2024 game logs and checked on 2025 and this season: results land above the model's 90th and 95th percentiles about 10% and 5% of the time, including for top players. Touchdowns and interceptions use count odds (Poisson), pulled toward the league rate for the player's volume. Totals and spreads use the market line with a 13-point typical miss, nudged 20% toward a stats-only score model.</p>
       <p><b>Teammates who are out.</b> When a player is listed Out (or Doubtful, counted at 75%), his carries go to the other backs and most of his targets to the other receivers, weighted toward his position. A starting QB out hands his volume to the backup at lower efficiency. Where a teammate has played games without him, those real numbers are blended in. Changed numbers carry a ▲ or ▼.</p>
-      <p><b>What it doesn't know.</b> Injuries during the week until the page refreshes, weather beyond what's listed, coaching changes, and snap-count news. A player listed Questionable could be on a snap limit.</p>
+      <p><b>Players back from injury.</b> A back or receiver who missed 2+ games hurt is put back on the page once the injury report (no game status, or Questionable) or a news story says he plays. In 600+ returns since 2020 the first game back gave him about 85% of his old carries and 83% of his targets, and the teammates who filled in gave back part of what they gained (their projections otherwise ride their fill-in games); fill-in backs' carry misses dropped about 18%. News that names him the starter gives him his full role; a snap count, 60%. Other role news (named the starter, benched, losing work) moves a player's volume 15%, a set nudge that can't be backtested. Every change is listed in the player's window with its story.</p>
+      <p><b>What it doesn't know.</b> Injuries during the week until the page refreshes, weather beyond what's listed, coaching changes, and role news the keyword rules miss. A player listed Questionable could be on a snap limit.</p>
       <p><b>Using it for alt lines.</b> If the model says 80% and Polymarket charges 70¢, that's a possible edge. If it charges 85¢, it isn't. Multiplying many 80% legs drops fast: five of them is about 33%.</p>
       <p><b>Players add up to the team.</b> Each team's players are scaled so they add up to one team line: passing, receiving, rushing, and touchdowns meet halfway between a team-stats line and the players' own sum (see <b>How the players add up</b> on the Lines &amp; matchup tab). Tested on past seasons, this made team totals much closer and didn't hurt the player projections.</p>
       <p><b>Polymarket bets.</b> From the day before kickoff (or within 24 hours of the start) each game's <b>Bets</b> tab reads Polymarket's player and game markets, priced at what a $20 bet would really cost. <b>Mispriced props</b> are single bets where the model's fair price is at least 3¢ above Polymarket's, each pressure-tested (the model's track record, Polymarket's whole line ladder, the sportsbook line, injuries, news, and price moves) and graded Verified, Caution, or Flagged; flagged bets stay listed with their likely issue named. <b>Negative correlation multipliers</b> are pairs that land together less often than their chances multiplied, so a parlay builder that adjusts for the link should pay more than straight multiplication. They come from simulating the game 6,000 times with weights fitted to past seasons (a QB's passing yards and his top receiver's yards +0.41, opposing lead backs' carries −0.29, a lead back's carries and his own QB's attempts −0.11). Only pairs with both legs priced at or below fair are listed, each with its break-even payout and how much more than straight it needs to pay. <b>Lottery tickets</b> are long shots priced at or below their chance. Click any player's bet, or its <b>Last 10</b> button, to see his last 10 games in a side panel.</p>

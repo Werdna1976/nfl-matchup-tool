@@ -27,6 +27,22 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -r requirements.txt
+      - name: Build NBA data
+        # If the NBA download fails, keep the NBA numbers already on the live site so the NFL page still publishes.
+        run: |
+          python scripts/nba_build.py || {
+            echo "NBA build failed; reusing the published NBA data"
+            curl -sfL -o site/data/nba.json "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/data/nba.json" || true
+            curl -sfL -o site/data/nba_backtest.json "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/data/nba_backtest.json" || true
+          }
+      - name: Collect player news
+        # Injury, illness, rest, role, trade, and morale stories from free feeds, kept for 7 days by
+        # merging with the published copy. Runs before the NFL build, which reads the role news
+        # (players back from injury, named the starter, benched) into the projections.
+        # Optional: if it fails, the NFL build uses the published copy (or no news).
+        run: |
+          curl -sfL -o site/data/news.json "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/data/news.json" || true
+          python scripts/news_build.py || echo "::warning::News collection failed; publishing without fresh news"
       - name: Build data
         run: python scripts/build_data.py
       - name: Backtest
@@ -36,14 +52,6 @@ jobs:
           python scripts/backtest.py "$(python -c 'import datetime as d; t=d.date.today(); print(t.year if t.month >= 8 else t.year - 1)')" || {
             echo "::warning::Backtest failed; reusing the published backtest.json"
             curl -sfL -o site/data/backtest.json "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/data/backtest.json" || true
-          }
-      - name: Build NBA data
-        # If the NBA download fails, keep the NBA numbers already on the live site so the NFL page still publishes.
-        run: |
-          python scripts/nba_build.py || {
-            echo "NBA build failed; reusing the published NBA data"
-            curl -sfL -o site/data/nba.json "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/data/nba.json" || true
-            curl -sfL -o site/data/nba_backtest.json "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/data/nba_backtest.json" || true
           }
       - name: Stamp script and style links with this commit
         # so a browser holding yesterday's copy of a script loads the new one after each deploy

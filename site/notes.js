@@ -44,15 +44,37 @@ const NOTES = (() => {
     return { byId, byName, count: Object.keys(byName).length };
   }
 
-  // Recent ESPN headlines, indexed by the player names they're tagged with
+  // What a story is about, by keyword (the same rules as scripts/news_build.py). Keyword rules, not
+  // a reading of the story: they point at what's worth reading. (NFL role signals, a separate set of
+  // rules in news_build.py, do move projections: see roleChips in app.js.)
+  const TAGS = [
+    ["illness", /illness|\bill\b|sick|flu\b|virus|stomach|migraine|non-injury|personal (?:reasons|matter)|bereavement|family matter/i],
+    ["injury", /injur|hamstring|ankle|knee|groin|calf|quad|achilles|\bacl\b|\bmcl\b|concussion|shoulder|wrist|\bhand\b|foot|toe\b|hip\b|ribs?\b|oblique|back (?:injury|spasms?|tightness)|sprain|strain|fractur|torn|\btear\b|\bmri\b|x-rays?|surgery|ruled out|\bout for\b|questionable|doubtful|game-time decision|limited (?:in )?practice|did not practice|\bdnp\b|injured reserve|day-to-day|week-to-week|sidelined|tweak|aggravat|\bsore|banged up|carted|exited|left (?:the )?game/i],
+    ["rest", /load management|maintenance|minutes (?:limit|restriction|cap)|snap (?:count|limit)|pitch count|workload|\bresting\b|will rest|to rest\b|rest (?:day|night)|back-to-back|second night/i],
+    ["role", /bench(?:ed)?\b|demot|promot|depth chart|named (?:the )?starter|will start|to start\b|starting (?:lineup|role|job|nod)|first-team|second-team|lose (?:his|the) (?:job|role|spot)|rotation|coming off the bench|move(?:d|s)? to the bench|expanded role|bigger role|larger role|reduced role|committee|split (?:carries|work)|snap share|usage/i],
+    ["trade", /trade|traded|dealt\b|deadline|rumou?r|shopping|on the (?:trading )?block|wants out|request(?:ed|s)? (?:a )?trade|acquir|waive[ds]?\b|released|cut by|buyout|free agen|sign(?:s|ed|ing) with|extension|contract (?:talks|dispute|year)/i],
+    ["morale", /suspen|\bfined?\b|arrest|charged|discipline|frustrat|unhappy|upset (?:with|about|over|by)|disgruntl|hold ?out|hold-in|critici|called out|calls out|blast(?:s|ed)|rips?\b|ripped|sound(?:s|ed)? off|lash(?:es|ed)? out|feud|rift|beef|locker room|chemistry|effort|attitude|not happy|\btension|sulk|apologi|benched for|ultimatum|tanking|morale|motivat|checked out|quit on|\bquit\b|confront|walk(?:ed|s)? out|no-show|ejected|controversy/i],
+    ["return", /return(?:s|ing|ed)? (?:to|from|vs\.?|for|tonight|sunday|monday|thursday)|cleared|activated|full practice|off the injury report|back (?:in|at) practice|good to go|will play|expected to play|set to play|upgraded/i],
+  ];
+  const TAG_LABEL = { illness: "Illness", injury: "Injury", rest: "Rest", role: "Role", trade: "Trade/contract", morale: "Morale/discipline", return: "Returning" };
+  // tags that can mean he plays less or worse; "role" and "return" can cut either way
+  const RISKY = new Set(["illness", "injury", "rest", "trade", "morale"]);
+  // health facts can come from the summary; morale, trade, and role only from the headline
+  const FROM_SUMMARY = new Set(["illness", "injury", "rest", "return"]);
+  const tagsFor = (head, summary = "") => (summary = /\b\d{2,3}-\d{2,3}\b/.test(head) ? "" : summary, TAGS.filter(([t, r]) => r.test(head) || (FROM_SUMMARY.has(t) && r.test(summary))).map(([t]) => t));
+  const NOISE = /how to watch|where to watch|highlights|prediction|\bpicks?\b|\bodds\b|best bets|prop bets|fantasy|start(?:\/| or | 'em)sit|pickups|waiver|rankings|mock draft|what to know|takeaways|grades|winners and losers|stephen a\.|father-son|by the numbers|top performances|\bquiz\b|podcast/i;
+
+  // Live ESPN headlines (read by the browser), indexed by the player names they're tagged with
   let NEWS = {};
   async function news(sport) {
     const j = await espn(sport, "news?limit=100");
     const out = {}, cutoff = Date.now() - 4 * 864e5;
     for (const a of j.articles || []) {
       const when = new Date(a.published || a.lastModified || 0).getTime();
-      if (when < cutoff) continue;
-      const item = { headline: a.headline || a.title, text: a.description || "", when, href: a.links?.web?.href || null };
+      const athletes = (a.categories || []).filter((c) => c.type === "athlete");
+      if (when < cutoff || a.type === "Media" || athletes.length > 3 || NOISE.test(a.headline || a.title || "")) continue;
+      const item = { headline: a.headline || a.title, text: a.description || "", when, href: a.links?.web?.href || null, src: "ESPN" };
+      item.tags = tagsFor(item.headline, item.text);
       for (const c of a.categories || []) {
         if (c.type === "athlete" && c.description) (out[norm(c.description)] ||= []).push(item);
       }
@@ -60,7 +82,49 @@ const NOTES = (() => {
     NEWS = out;
     return Object.keys(out).length;
   }
-  const newsFor = (name) => NEWS[norm(name)] || [];
+
+  // Stories gathered on each scheduled refresh (scripts/news_build.py): ESPN team feeds, RotoWire,
+  // CBS, Yahoo, ProFootballTalk. Filed by player id, plus team stories about morale
+  // and trades. 7 days kept.
+  let FILE = { players: {}, teams: {} }, FILE_INFO = null;
+  async function stories(key) {
+    const r = await fetch(`data/news.json?t=${Date.now()}`, { cache: "no-store" });
+    if (!r.ok) throw new Error(r.status);
+    const j = await r.json();
+    FILE = j[key] || { players: {}, teams: {} };
+    FILE_INFO = { updated: j.updated, sources: j.sources || {} };
+    return Object.keys(FILE.players || {}).length;
+  }
+  const fromFile = (it) => ({ headline: it.h, text: it.x || "", when: (it.t || 0) * 1000, href: it.u || null, src: it.s || "", tags: it.g || tagsFor(it.h, it.x || "") });
+  function dedupe(items) {
+    const seen = new Set();
+    return items.sort((a, b) => b.when - a.when).filter((n) => { const k = norm(n.headline).slice(0, 80); if (seen.has(k)) return false; seen.add(k); return true; });
+  }
+  // Everything about one player, newest first: the refresh's stories plus live ESPN headlines.
+  // pid is optional (older callers pass just a name).
+  function newsFor(name, pid) {
+    const file = pid != null ? (FILE.players?.[pid] || []).map(fromFile) : [];
+    return dedupe([...file, ...(NEWS[norm(name)] || [])]);
+  }
+  const teamNews = (ab) => dedupe((FILE.teams?.[ab] || []).map(fromFile));
+
+  const ago = (when) => { const h = (Date.now() - when) / 36e5; return h < 1 ? "just now" : h < 24 ? `${Math.round(h)}h ago` : `${Math.round(h / 24)}d ago`; };
+  const tagText = (n) => (n.tags?.length ? n.tags.map((t) => TAG_LABEL[t]).join(", ") : "News");
+  // Note chips for a player's (or team's) recent stories: up to `max`, from the last `days` days
+  function newsChips(items, max = 3, days = 4) {
+    const cutoff = Date.now() - days * 864e5;
+    return items.filter((n) => n.when >= cutoff).slice(0, max).map((n) => ({
+      kind: n.tags?.some((t) => RISKY.has(t)) ? "warn" : "info",
+      text: `${tagText(n)}: ${n.headline} (${ago(n.when)}${n.src ? `, ${n.src}` : ""})`,
+    }));
+  }
+  // The news block in the side panel: every story kept, with tags, source, age, and a link
+  function newsList(items) {
+    if (!items.length) return `<div class="muted small">No stories about him in the last 7 days from ESPN, RotoWire, CBS, Yahoo${FILE_INFO ? "" : " (the news file hasn't loaded)"}.</div>`;
+    return `<ul class="news-list">${items.slice(0, 10).map((n) => `<li>
+      <div>${(n.tags || []).map((t) => `<span class="tag ${RISKY.has(t) ? "warn" : ""}">${TAG_LABEL[t]}</span>`).join("")}${/^https?:\/\//i.test(n.href || "") ? `<a href="${esc(n.href)}" target="_blank" rel="noopener">${esc(n.headline)}</a>` : esc(n.headline)}</div>
+      <div class="muted small">${esc(n.src || "")} · ${ago(n.when)}${n.text ? ` · ${esc(n.text.slice(0, 220))}` : ""}</div></li>`).join("")}</ul>`;
+  }
 
   // Average of `stat` in the player's games where `mate` sat, vs. games they both played.
   // gameKey: field identifying the game in each log row (date for NBA, week for NFL).
@@ -85,7 +149,7 @@ const NOTES = (() => {
     // team-wide notes stay on top, then players with the strongest signals
     rows = rows.filter((r) => r.notes.length).sort((a, b) => (b.tag === "team") - (a.tag === "team") || score(b.notes) - score(a.notes));
     el.innerHTML = `
-      <div class="panel-head"><h2>Player notes</h2><span class="muted small">▲ good spot · ▼ tough spot · ! injury or minutes risk. Built from the model, recent games, ESPN's injury report and headlines.</span></div>
+      <div class="panel-head"><h2>Player notes</h2><span class="muted small">▲ good spot · ▼ tough spot · ! injury or minutes risk. Built from the model, recent games, ESPN's injury report, and player news (ESPN, RotoWire, CBS, Yahoo, ProFootballTalk) tagged by topic. News tags are keyword-based; only players back from injury and role news (starter, snap count, benched) move NFL projections, and each says so.</span></div>
       ${rows.length ? `<div class="notes-list">${rows.map((r) => `
         <div class="note-row${r.pid ? "" : " team"}" data-pid="${r.pid || ""}">
           <div class="note-who"><span class="pname">${esc(r.name)}</span><span class="pos-tag">${esc(r.tag)}</span></div>
@@ -101,5 +165,5 @@ const NOTES = (() => {
     document.addEventListener("visibilitychange", () => { if (!document.hidden && Date.now() - last > 9.5 * 60e3) { last = Date.now(); fn(); } });
   }
 
-  return { injuries, news, newsFor, without, panel, chip, norm, autoRefresh };
+  return { injuries, news, stories, newsFor, teamNews, newsChips, newsList, tagsFor, RISKY, TAG_LABEL, ago, without, panel, chip, norm, autoRefresh };
 })();

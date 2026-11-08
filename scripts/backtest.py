@@ -25,6 +25,7 @@ LABELS = {"attempts": "QB pass attempts", "completions": "QB completions", "pass
 def run(season, first_week=4, data=None, prev=None):
     stats, team_stats, sched = data or B.load(season)[:3]
     prev = B.prev_summary(B.load_prev(season)) if prev is None else prev
+    snaps = B.load_snaps(season), B.load_snaps(season - 1)
     last = int(stats.week.max())
     rows = []
     for W in range(first_week, last + 1):
@@ -51,7 +52,8 @@ def run(season, first_week=4, data=None, prev=None):
                     if actual.empty or hist.empty:
                         continue
                     pos = hist.position.iloc[-1]
-                    proj = B.project_player(hist, pos, opp, teams, lg, gs, cvs, rates, prev=prev.get(pid))
+                    proj = B.project_player(hist, pos, opp, teams, lg, gs, cvs, rates, prev=prev.get(pid),
+                                            snap_t=B.snap_trend(B.snap_series(snaps, pid, season, W)))
                     for col, kind in POSITION_STATS[pos]:
                         a = float(actual[col].fillna(0).iloc[0])
                         p = proj[col]
