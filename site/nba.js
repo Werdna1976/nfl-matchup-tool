@@ -295,7 +295,7 @@ async function refreshLines() {
 
 // reload the data file (rebuilt hourly) and re-check lines, injuries, and headlines
 async function reloadAll() {
-  BASKETS.clear();
+  BASKETS.clear(); LEADERS.clear();
   try { DATA = await loadData(); computeRanks(); DD_CACHE.clear(); } catch (e) { /* keep what we have */ }
   await refreshLines();
 }
@@ -336,10 +336,11 @@ async function boot() {
   state.date = hash.get("date");
   if (!DATA.dates.includes(state.date)) state.date = DATA.dates.find((d) => d >= etToday()) || DATA.dates.at(-1);
   state.gameId = hash.get("game");
-  state.view = hash.get("view") === "props" ? "props" : null;
+  state.view = ["props", "leaders"].includes(hash.get("view")) ? hash.get("view") : null;
   renderMeta();
   $("#refreshBtn").onclick = reloadAll;
   $("#propsBtn").onclick = openProps;
+  $("#leadersBtn").onclick = openLeaders;
   NOTES.autoRefresh(reloadAll);
   $("#slipBtn").onclick = () => toggleSlip(true);
   $("#howLink").onclick = (e) => { e.preventDefault(); openHow(); };
@@ -378,20 +379,21 @@ function computeRanks() {
 
 function renderDates() {
   $("#weeks").innerHTML = DATA.dates.map((d) => `<button type="button" aria-pressed="${d === state.date}" data-d="${d}">${esc(dayLabel(d))}</button>`).join("");
-  $("#weeks").querySelectorAll("button").forEach((b) => b.onclick = () => { state.view = null; state.date = b.dataset.d; state.gameId = null; renderDates(); renderGames(); });
+  $("#weeks").querySelectorAll("button").forEach((b) => b.onclick = () => { if (state.view !== "leaders") state.view = null; state.date = b.dataset.d; state.gameId = null; renderDates(); renderGames(); });
 }
 
 function renderGames() {
   const games = DATA.games.filter((g) => g.date === state.date);
   // open on the first game that isn't over yet
   if (!games.find((g) => g.id === state.gameId)) state.gameId = (games.find((g) => RESULT.state(g) !== "post") || games[0])?.id;
-  $("#games").innerHTML = PROPS_CARD() + (games.map((g) => `
+  $("#games").innerHTML = PROPS_CARD() + LEADERS_CARD() + (games.map((g) => `
     <button type="button" class="gcard ${RESULT.state(g)}" data-id="${g.id}" aria-current="${!state.view && g.id === state.gameId}">
       <div class="row"><span class="teams">${RESULT.teams(g)}</span>${RESULT.badge(g) || `<span class="when">${esc(tipTime(g))}</span>`}</div>
       <div class="lines">${RESULT.state(g) === "post" ? esc(RESULT.settled(g)) : g.spread != null ? `${esc(spreadText(g))} · O/U ${g.total}` : `No line yet · model ${fmt(g.model.model_total, 0)}`}</div>
     </button>`).join("") || `<div class="empty">No games on this day.</div>`);
   $("#games").querySelectorAll(".gcard[data-id]").forEach((b) => b.onclick = () => { state.view = null; state.gameId = b.dataset.id; state.team = null; renderGames(); });
   $("#games").querySelector("[data-props]").onclick = openProps;
+  $("#games").querySelector("[data-leaders]").onclick = openLeaders;
   setHash();
   renderGame();
 }
@@ -420,8 +422,56 @@ function renderProps() {
   ALLPROPS.render(el, { games: DATA.games, adapter: basketAdapter, onOpen: openFromProps, sport: "NBA" });
 }
 
+// ---------------------------------------------------------------- leaders: who tops the night in one stat (leaders.js)
+
+const LEADERS_CARD = () => `
+    <button type="button" class="gcard props-card" data-leaders aria-current="${state.view === "leaders"}">
+      <div class="row"><span class="teams">🏆 Leaders</span></div>
+      <div class="lines">${esc(dayLabel(state.date))}: most points, rebounds, assists</div>
+    </button>`;
+function openLeaders() { state.view = "leaders"; renderGames(); window.scrollTo({ top: 0 }); }
+// tail: the model's upper tail runs a little long when you take the best of a night's games
+// (simulated top scorer 42 vs. a real median of 40-41 on 7-9 game nights in 2024-26), so
+// results above a player's median are pulled in by this factor, fitted so the simulated
+// leaders match the real ones (points 40.5, rebounds 17, assists 13, threes 7, PRA 56).
+const LEADER_CATS = [
+  { key: "pts", label: "Points", unit: "points", floor: 10, tail: 0.86, pm: /\bpoints\b|scoring leader|top scorer/i, pmNot: /rebounds|assists/i },
+  { key: "reb", label: "Rebounds", unit: "rebounds", floor: 4, tail: 0.96, pm: /rebounds/i, pmNot: /points|assists/i },
+  { key: "ast", label: "Assists", unit: "assists", floor: 3, tail: 0.92, pm: /assists/i, pmNot: /points|rebounds/i },
+  { key: "fg3", label: "3-pointers made", unit: "threes", floor: 1, tail: 0.9, pm: /three|3-point|3pt|3pm/i },
+  { key: "pra", label: "Pts + Reb + Ast", unit: "PRA", floor: 15, tail: 0.88, pm: /points.*rebounds.*assists|\bpra\b/i },
+];
+const leaderActual = (pid, g, k) => {
+  const r = DATA.players[pid]?.log.find((x) => x.d === g.date && [g.home, g.away].includes(x.tm));
+  return r ? val(r, k) ?? null : null;
+};
+function leaderEnv(g, tm, k, rows) {
+  const lead = (tm === g.home ? 1 : -1) * g.model.margin.mean, tot = g.total ?? g.model.total.mean;
+  const tots = [...new Set(rows.map((r) => r.g))].map((x) => x.total ?? x.model.total.mean);
+  if (Math.abs(lead) >= 10) return `Blowout risk (${fmt(Math.abs(lead), 1)}-pt ${lead > 0 ? "favorite" : "underdog"}): starters may sit the 4th`;
+  if (["pts", "fg3", "pra", "ast"].includes(k) && tots.length > 2 && tot >= Math.max(...tots)) return `Highest total tonight (O/U ${fmt(tot, 1)})`;
+  if (k === "reb" && tots.length > 2 && tot <= Math.min(...tots)) return "Lowest total tonight: more misses to rebound";
+  return null;
+}
+function renderLeaders() {
+  let el = $("#leaders");
+  if (!el) { $("#game").innerHTML = `<div class="panel" id="leaders"></div>`; el = $("#leaders"); }
+  const games = DATA.games.filter((g) => g.date === state.date);
+  LEADERS.render(el, {
+    sport: "NBA", league: "nba", title: dayLabel(state.date),
+    scopes: games.length ? [{ id: state.date, label: dayLabel(state.date), games, first: state.date, last: state.date, span: "tonight" }] : [],
+    cats: LEADER_CATS, adapter: basketAdapter, cdf, actual: leaderActual, env: leaderEnv,
+    extraActual: (g, k) => [g.away, g.home].flatMap((tm) => (g.players[tm] || []).map((pid) => {
+      const p = DATA.players[pid], v = leaderActual(pid, g, k);
+      return v == null ? null : { pid, name: p.name, team: p.team, pos: p.pos, v };
+    })).filter(Boolean),
+    gameText: (g) => `${g.away} @ ${g.home}`, whenText: (g) => tipTime(g), onOpen: openFromProps,
+  });
+}
+
 function renderGame() {
   if (state.view === "props") return renderProps();
+  if (state.view === "leaders") return renderLeaders();
   const g = curGame();
   if (!g) { $("#game").innerHTML = DATA.games.length ? "" : `<div class="panel empty">No upcoming NBA games in the data file. In the offseason this page is empty.</div>`; return; }
   if (!state.team) state.team = g.away;
