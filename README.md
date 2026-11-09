@@ -84,6 +84,15 @@ the story, and there is no archive of old feeds to test them on, so the tags the
 boards (Reddit, X) aren't included: they need paid keys and are mostly noise. The market reacts to real news
 within minutes, faster than an hourly refresh, so news is most useful as a reason to double-check a cheap price.
 
+**NFL depth chart.** Listing players by recent stats alone missed backups who hadn't played lately: the Vikings'
+week-9 page had Kyler Murray (Out) and no other QB, so nobody took his passing. `build_data.py` now also reads each
+team's current depth chart (nflverse `depth_charts`, refreshed daily from ESPN) and lists players down each position
+until 2 QBs, 3 RBs, 5 WRs and 3 TEs are healthy; Out, Doubtful and Questionable players don't count toward that,
+and injured-reserve players are skipped. Players new to the team or without a game this season get a small
+"if he plays" line from their own history; when the starting QB is out, the next QB on the chart takes his volume
+at backup efficiency. Across week 9 the page went from about 1.1 to 2.2 QBs, 4.8 to 6.0 WRs, 3.2 to 4.0 RBs and
+2.8 to 3.4 TEs per team. Traded players move to the team whose chart lists them.
+
 **NFL players back from injury, and role news.** The page lists players from each team's last three games, so a
 starter who missed more than that dropped off (the Jets' week-9 page had no Breece Hall) and the backup kept his
 fill-in workload (Braelon Allen, 18.6 carries a game while Hall was out). `scripts/return_study.py` looked at 600+
