@@ -646,6 +646,59 @@ def eligible_players(stats, team, upto_week, depth=False):
     return keep
 
 
+# ---------------------------------------------------------------- depth chart
+
+# Listing players by their recent stats alone leaves holes: a backup QB who hasn't thrown in three
+# games (the Vikings' Carson Wentz behind Kyler Murray) and a receiver who just joined or hasn't
+# been targeted (Odell Beckham Jr.) never show up, so when the starter is out there is nobody to
+# hand his volume to. The team's current depth chart (nflverse, refreshed daily from ESPN) fills
+# those spots: at each position the page lists players down the chart until this many of them are
+# healthy. Out, Doubtful and Questionable players don't count toward it, so the next man up is
+# always there. Injured-reserve players are skipped.
+DEPTH_KEEP = {"QB": 2, "RB": 3, "WR": 5, "TE": 3}
+DEPTH_POS = {"QB": "QB", "RB": "RB", "FB": "RB", "WR": "WR", "TE": "TE"}
+HURT = ("Out", "Doubtful", "Questionable")
+
+
+def load_depth_charts(season):
+    """{team: [{"pid", "name", "pos", "rank"}]} offensive skill players from each team's latest
+    nflverse depth chart, in chart order within each position. {} if the download fails."""
+    try:
+        d = read_csv(f"{NFLVERSE}/depth_charts/depth_charts_{season}.csv")
+    except Exception as e:
+        print("depth charts unavailable:", e)
+        return {}
+    if not {"dt", "team", "gsis_id", "pos_abb", "pos_rank", "pos_grp"} <= set(d.columns):
+        print("depth charts: unexpected columns, skipped")
+        return {}
+    d = d[d.dt == d.groupby("team").dt.transform("max")]
+    d = d[d.pos_abb.isin(DEPTH_POS) & d.gsis_id.notna() & ~d.pos_grp.str.contains("Special|D$", na=False)]
+    out = {}
+    for tm, g in d.sort_values(["pos_rank", "pos_slot"]).groupby("team"):
+        seen, rows = set(), []
+        for x in g.itertuples():
+            if x.gsis_id in seen:
+                continue
+            seen.add(x.gsis_id)
+            rows.append({"pid": x.gsis_id, "name": x.player_name, "pos": DEPTH_POS[x.pos_abb], "rank": int(x.pos_rank)})
+        out[ESPN_TO_NFLVERSE.get(tm, tm)] = rows
+    return out
+
+
+def depth_adds(chart, hurt, on_ir):
+    """Players from one team's depth chart to list: down each position until DEPTH_KEEP of them
+    are healthy. hurt(pid) / on_ir(pid) say whether he is on the injury report / injured reserve."""
+    healthy, picks = {}, []
+    for e in chart:
+        pos = e["pos"]
+        if healthy.get(pos, 0) >= DEPTH_KEEP[pos] or on_ir(e["pid"]):
+            continue
+        picks.append(e)
+        if not hurt(e["pid"]):
+            healthy[pos] = healthy.get(pos, 0) + 1
+    return picks
+
+
 # ---------------------------------------------------------------- players coming back
 
 # A back or receiver who missed 2+ games hurt drops off the page (only players from the team's last
@@ -674,18 +727,22 @@ RIDES = {"carries": ("carries", "rushing_yards", "rushing_tds"),
 VOL_KEY = {"carries": "car", "targets": "tgt"}
 
 
-def load_rosters(season):
+def load_rosters(season, info=None):
     """{gsis_id: {week: roster status}} from nflverse weekly rosters (ACT, RES = injured reserve,
-    INA = inactive, ...). {} if the download fails."""
+    INA = inactive, DEV = practice squad, ...). {} if the download fails. If `info` is a dict, it is
+    filled with each player's latest row: {gsis_id: {"name", "team", "pos", "img", "status"}}."""
     try:
         r = read_csv(f"{NFLVERSE}/weekly_rosters/roster_weekly_{season}.csv")
     except Exception as e:
         print("weekly rosters unavailable:", e)
         return {}
     out = {}
-    for x in r[r.game_type == "REG"].itertuples():
+    for x in r[r.game_type == "REG"].sort_values("week").itertuples():
         if isinstance(x.gsis_id, str):
             out.setdefault(x.gsis_id, {})[int(x.week)] = x.status
+            if info is not None:
+                info[x.gsis_id] = {"name": x.full_name, "team": x.team, "pos": x.position, "status": x.status,
+                                   "img": x.headshot_url if isinstance(x.headshot_url, str) else None}
     return out
 
 
@@ -961,7 +1018,9 @@ def build(season):
     prev_raw = load_prev(season)
     prev = prev_summary(prev_raw)
     snaps = load_snaps(season), load_snaps(season - 1)
-    rosters, news = load_rosters(season), load_news()
+    roster_info = {}
+    rosters, news = load_rosters(season, roster_info), load_news()
+    charts = load_depth_charts(season)
     calib = None   # spreads come from model_params.json, fitted on past seasons
 
     inj_latest = {}
@@ -1002,6 +1061,31 @@ def build(season):
         if pid in inj_latest and inj_latest[pid]["wk"] >= week - 1:
             players[pid]["inj"] = inj_latest[pid]
 
+    # the depth chart: who is on each team now (traded players move), plus players who have no
+    # stats yet this season (a backup QB who hasn't thrown, a receiver just signed)
+    on_chart = {}
+    for tm, rows in charts.items():
+        for e in rows:
+            on_chart.setdefault(e["pid"], []).append((tm, e))
+    for pid, where in on_chart.items():
+        if len(where) != 1:
+            continue
+        tm, e = where[0]
+        if pid not in players:
+            ri = roster_info.get(pid, {})
+            players[pid] = {"name": ri.get("name") or e["name"], "pos": e["pos"], "team": tm, "img": ri.get("img"),
+                            "log": [], "proj": {}, "form": None}
+            if pid in inj_latest and inj_latest[pid]["wk"] >= week - 1:
+                players[pid]["inj"] = inj_latest[pid]
+        players[pid]["team"] = tm
+        players[pid]["dc"] = e["rank"]   # depth-chart rank at his position (1 = starter)
+
+    def hurt(pid):
+        return (players.get(pid, {}).get("inj") or {}).get("status") in HURT
+
+    def on_ir(pid):
+        return roster_info.get(pid, {}).get("status") == "RES"
+
     espn = {}
     games = []
     for w in weeks:
@@ -1034,6 +1118,8 @@ def build(season):
                 game["script"][tm] = {k: round(v, 3) for k, v in gs.items()}
                 game["team_model"][tm] = {k: round(v, 2) for k, v in team_projection(tm, opp, teams, lg, gs, implied).items()}
                 listed = [pid for pid in eligible_players(stats, tm, week, depth=True) if players[pid]["team"] == tm]
+                listed += [e["pid"] for e in depth_adds(charts.get(tm, []), hurt, on_ir)
+                           if e["pid"] not in listed and players.get(e["pid"], {}).get("team") == tm]
                 regular = set(eligible_players(stats, tm, week))
                 game["share"][tm] = {k: round(v, 3) for k, v in listed_share(stats, team_stats, tm, listed, week).items()}
                 for pid in listed:

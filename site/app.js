@@ -674,8 +674,8 @@ function renderPlayers(g) {
             ${keys.map((k, i) => {
               const d = pr[k];
               if (!d) return `<td${gsCls(keys, i)}>–</td>`;
-              const season = p.log.reduce((a, r) => a + (r[k] || 0), 0) / p.log.length;
-              const l3 = last.reduce((a, r) => a + (r[k] || 0), 0) / last.length;
+              const season = p.log.reduce((a, r) => a + (r[k] || 0), 0) / (p.log.length || 1);
+              const l3 = last.reduce((a, r) => a + (r[k] || 0), 0) / (last.length || 1);
               const rng = STATS[k].count ? `${pct(1 - poissonCdf(0, d.mean))} for 1+` : `${Math.round(quantile(0.1, d))}–${Math.round(quantile(0.9, d))}`;
               return `<td${gsCls(keys, i)} title="${STATS[k].label}: season avg ${fmt(season, 1)} · last 3 avg ${fmt(l3, 1)}"><b>${fmt(d.mean, STATS[k].dec)}</b>${ROLES.mark(p, g.id, k, STATS[k].dec)}<span class="rng">${rng}</span></td>`;
             }).join("")}
@@ -739,7 +739,9 @@ function adjustForInjuries() {
         const mp = m.base[g.id], mates = roster.filter((p) => p !== m && !ROLES.outWeight(p));
         if (m.pos === "QB") {
           if ((mp.att?.mean || 0) < 15) continue;
-          const backup = mates.filter((p) => p.pos === "QB").sort((a, b) => b.proj[g.id].att.mean - a.proj[g.id].att.mean)[0];
+          // the next QB on the depth chart; without one, whoever has thrown the most
+          const backup = mates.filter((p) => p.pos === "QB" && p.proj[g.id].att)
+            .sort((a, b) => (a.dc ?? 99) - (b.dc ?? 99) || b.proj[g.id].att.mean - a.proj[g.id].att.mean)[0];
           if (backup) {
             for (const [k, eff] of Object.entries(BACKUP_QB)) {
               const d = backup.proj[g.id][k];
@@ -1529,6 +1531,7 @@ function openHow() {
       <p><b>Matchup.</b> Yardage gets scaled by how many yards the opponent allows per pass, per carry, and per target to that position (WR, TE, RB), compared to the league. Small samples are pulled toward average so one blowout doesn't swing things too far. Touchdowns scale with the team's implied points, blended with the league TD rate so a player who hasn't scored yet still has a real chance.</p>
       <p><b>Ranges.</b> Bigger roles swing less in relative terms, so the spread depends on the size of the projection, lightly blended with the player's own game-to-game swing. Each stat mixes a "normal game" curve with a small "dud game" curve (hurt early, benched, schemed out), so the upper tail isn't stretched to cover those games. Every weight was fitted on 2022–2024 game logs and checked on 2025 and this season: results land above the model's 90th and 95th percentiles about 10% and 5% of the time, including for top players. Touchdowns and interceptions use count odds (Poisson), pulled toward the league rate for the player's volume. Totals and spreads use the market line with a 13-point typical miss, nudged 20% toward a stats-only score model.</p>
       <p><b>Teammates who are out.</b> When a player is listed Out (or Doubtful, counted at 75%), his carries go to the other backs and most of his targets to the other receivers, weighted toward his position. A starting QB out hands his volume to the backup at lower efficiency. Where a teammate has played games without him, those real numbers are blended in. Changed numbers carry a ▲ or ▼.</p>
+      <p><b>Who is listed.</b> Everyone with a recent role, plus each team's depth chart down to 2 healthy QBs, 3 backs, 5 receivers and 3 tight ends. Players who are Out, Doubtful or Questionable don't count toward those numbers, so the next man up is always on the page. A backup with few or no games this season gets a small "if he plays" line until the starter is ruled out.</p>
       <p><b>Players back from injury.</b> A back or receiver who missed 2+ games hurt is put back on the page once the injury report (no game status, or Questionable) or a news story says he plays. In 600+ returns since 2020 the first game back gave him about 85% of his old carries and 83% of his targets, and the teammates who filled in gave back part of what they gained (their projections otherwise ride their fill-in games); fill-in backs' carry misses dropped about 18%. News that names him the starter gives him his full role; a snap count, 60%. Other role news (named the starter, benched, losing work) moves a player's volume 15%, a set nudge that can't be backtested. Every change is listed in the player's window with its story.</p>
       <p><b>What it doesn't know.</b> Injuries during the week until the page refreshes, weather beyond what's listed, coaching changes, and role news the keyword rules miss. A player listed Questionable could be on a snap limit.</p>
       <p><b>Using it for alt lines.</b> If the model says 80% and Polymarket charges 70¢, that's a possible edge. If it charges 85¢, it isn't. Multiplying many 80% legs drops fast: five of them is about 33%.</p>
