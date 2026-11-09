@@ -373,6 +373,15 @@ function computeRanks() {
   rank("o_fg3", (t) => DATA.teams[t].o_fg3100, false);
   rank("reb", (t) => DATA.teams[t].reb100, true);
   rank("o_reb", (t) => DATA.teams[t].o_reb100, false);
+  rank("ast", (t) => DATA.teams[t].ast100, true);
+  rank("o_ast", (t) => DATA.teams[t].o_ast100, false);
+  // assist ratings were added after older data files were built: fill them in here if missing
+  for (const [key, sign] of [["ast100", 1], ["o_ast100", -1]]) {
+    if (ab.every((t) => DATA.teams[t].rating?.[key] != null)) continue;
+    const vals = ab.map((t) => DATA.teams[t][key]), mu = vals.reduce((a, b) => a + b, 0) / vals.length;
+    const sd = Math.sqrt(vals.reduce((a, v) => a + (v - mu) ** 2, 0) / vals.length) || 1;
+    ab.forEach((t) => { (DATA.teams[t].rating ||= {})[key] = Math.round(sign * (DATA.teams[t][key] - mu) / sd * 100) / 100; });
+  }
 }
 
 // ---------------------------------------------------------------- date + game list
@@ -502,15 +511,15 @@ function renderGame() {
       <div class="panel" id="spots"></div>
     </div>
     <div data-tab="game">
+      <div class="panel">
+        <div class="panel-head"><h2>Matchup strength</h2><span class="muted small">Ratings compare each team with the league per 100 possessions. 0 = average.</span></div>
+        <div class="grid2">${matchupSide(g, g.away, g.home)}${matchupSide(g, g.home, g.away)}</div>
+      </div>
       <div class="grid2">
         <div class="panel" id="totalTool"></div>
         <div class="panel" id="spreadTool"></div>
       </div>
       <div class="panel" id="teamTotals"></div>
-      <div class="panel">
-        <div class="panel-head"><h2>Matchup strength</h2><span class="muted small">Ratings compare each team with the league per 100 possessions. 0 = average.</span></div>
-        <div class="grid2">${matchupSide(g, g.away, g.home)}${matchupSide(g, g.home, g.away)}</div>
-      </div>
     </div>
     <div data-tab="notes">
       <div class="panel" id="notes"></div>
@@ -605,6 +614,9 @@ function matchupSide(g, tm, opp) {
     ${matchupRow("Rebounding", T.rating.reb100, O.rating.o_reb100,
       `${tm} grabs ${fmt(T.reb100 * T.pace / 100, 1)} boards a game (${ord(RANKS[tm].reb)})`,
       `${opp} allows ${fmt(O.o_reb100 * O.pace / 100, 1)} a game (${ord(RANKS[opp].o_reb)} fewest)`)}
+    ${matchupRow("Assists", T.rating.ast100, O.rating.o_ast100,
+      `${tm} dishes ${fmt(T.ast100 * T.pace / 100, 1)} assists a game (${ord(RANKS[tm].ast)})`,
+      `${opp} allows ${fmt(O.o_ast100 * O.pace / 100, 1)} a game (${ord(RANKS[opp].o_ast)} fewest)`)}
     <div class="small">Pace: ${tm} plays ${fmt(T.pace, 1)} possessions a game (${ord(RANKS[tm].pace)} fastest), this game projects ${fmt(g.model.pace, 1)}${s.pace_f > 1.02 ? ", a bit faster than usual, so more stats to go around" : s.pace_f < 0.98 ? ", a bit slower than usual" : ""}.
     Implied team points <b>${fmt(implied, 1)}</b> vs. ${fmt(T.ppg, 1)} season average.</div>
   </div>`;

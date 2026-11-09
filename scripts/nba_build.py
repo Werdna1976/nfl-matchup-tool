@@ -364,7 +364,8 @@ def team_context(tg, prior=None):
         e["f_reb"] = e["o_reb100"] / lg["reb100"]
         e["f_ast"] = e["o_ast100"] / lg["ast100"]
         e["f_fg3"] = e["o_fg3100"] / lg["fg3100"]
-    for key, sign in [("ortg", 1), ("drtg", -1), ("pace", 1), ("fg3100", 1), ("o_fg3100", -1), ("reb100", 1), ("o_reb100", -1)]:
+    for key, sign in [("ortg", 1), ("drtg", -1), ("pace", 1), ("fg3100", 1), ("o_fg3100", -1), ("reb100", 1), ("o_reb100", -1),
+                      ("ast100", 1), ("o_ast100", -1)]:
         vals = [teams[a][key] for a in teams]
         mu = sum(vals) / len(vals)
         sd = (sum((v - mu) ** 2 for v in vals) / len(vals)) ** 0.5 or 1
