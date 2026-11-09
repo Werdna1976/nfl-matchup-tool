@@ -291,10 +291,13 @@ let LINE_STATUS = "Checking for live lines…";
 let NEWS_STATUS = "";
 async function refreshInjuries() {
   try {
-    const { byName, count } = await NOTES.injuries("football/nfl");
+    const { byId, allByName, count } = await NOTES.injuries("football/nfl");
     if (count) {
       for (const p of Object.values(DATA.players)) {
-        const e = byName[NOTES.norm(p.name)];
+        // by ESPN id; by name only for a player without one, and only on his own team (names
+        // repeat: the Browns LB Justin Jefferson was out while the Vikings WR played)
+        const e = p.espn && Object.keys(byId).length ? byId[p.espn]
+          : (allByName[NOTES.norm(p.name)] || []).find((x) => !x.team || x.team === DATA.team_names[p.team]);
         if (e) p.inj = { ...e, wk: DATA.week, practice: p.inj?.practice || null }; else delete p.inj;
       }
       NEWS_STATUS = ` · injury report live as of ${new Date().toLocaleTimeString()}`;
@@ -1023,7 +1026,7 @@ function playerNotes(p, g) {
     const b = p.base[g.id];
     out.push({ kind: (dv || dy) > 0 ? "good" : "bad", text: `Projection ${(dv || dy) > 0 ? "up" : "down"} for ${p.why[g.id].join(", ")} out: ${fmt(b[dk].mean, 1)} → ${fmt(pr[dk].mean, 1)} ${STATS[dk].short.toLowerCase()}, ${Math.round(b[MAIN_STAT[p.pos]].mean)} → ${Math.round(pr[MAIN_STAT[p.pos]].mean)} ${STATS[MAIN_STAT[p.pos]].short.toLowerCase()}` });
   }
-  out.push(...NOTES.newsChips(NOTES.newsFor(p.name, p.pid), 3));
+  out.push(...NOTES.newsChips(NOTES.newsFor(p.name, p.pid, p.espn), 3));
   return out;
 }
 
@@ -1469,7 +1472,7 @@ TREND.config = {
     return TREND.form(rows, fm.n ? `over his last ${fm.n} games, last season included` : "",
       "A change in snap share has carried into the next game in 2024-26 backtests, so it moves the projection (down 3.5% per 10% drop, up 2% per 10% rise). Streaks in the stat itself haven't beaten the projection, which already leans on recent games.", rest)
       + (roleAdj(p, l.gid).length ? `<h3>Why the projection moved</h3><div class="note-chips">${roleChips(p, l.gid).map(NOTES.chip).join("")}</div>` : "")
-      + `<h3>News, last 7 days</h3>${NOTES.newsList(NOTES.newsFor(p.name, p.pid))}`;
+      + `<h3>News, last 7 days</h3>${NOTES.newsList(NOTES.newsFor(p.name, p.pid, p.espn))}`;
   },
 };
 

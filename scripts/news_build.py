@@ -344,6 +344,7 @@ def roster(sport):
 def match(items, players, team_names, want_roles=False):
     by_espn = {e: pid for pid, _, _, e in players if e}
     full_name = {pid: name for pid, name, _, _ in players}
+    espn_of = {pid: e for pid, _, _, e in players if e}
     names = {}
     for pid, name, _, _ in players:
         n = norm(name)
@@ -369,8 +370,14 @@ def match(items, players, team_names, want_roles=False):
             if not hit and len(ids) <= 3:
                 found |= set(pat.findall(norm(it.get("x", ""))))
             for n in found:
-                if len(names[n]) == 1:   # two site players with one name: can't tell which
-                    hit.add(names[n][0])
+                if len(names[n]) != 1:   # two site players with one name: can't tell which
+                    continue
+                pid = names[n][0]
+                # ESPN tagged the story's players: a name match whose ESPN id isn't among them is
+                # someone else with that name (the Browns LB Justin Jefferson, not the Vikings WR)
+                if ids and espn_of.get(pid) and espn_of[pid] not in ids:
+                    continue
+                hit.add(pid)
         rec = {k: it[k] for k in ("h", "x", "t", "s", "u", "g") if it.get(k) is not None}
         sig = {}
         if hit and want_roles:
