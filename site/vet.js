@@ -175,7 +175,7 @@ const VET = (() => {
         add("warn", `Practice: ${inj.practice}${inj.injury ? ` (${inj.injury})` : ""}, though not on the game status report`);
       }
       // stories from the last 4 days (ESPN live, plus the refresh's RotoWire/CBS/Yahoo/rumor feeds)
-      const news = (typeof NOTES !== "undefined" ? NOTES.newsFor(pl.name, row.pid) : []).filter((n) => n.when >= Date.now() - 4 * 864e5).slice(0, 3);
+      const news = (typeof NOTES !== "undefined" ? NOTES.newsFor(pl.name, row.pid, pl.espn) : []).filter((n) => n.when >= Date.now() - 4 * 864e5).slice(0, 3);
       for (const n of news) {
         const txt = `${n.headline} ${n.text || ""}`, tg = n.tags || [];
         if (tg.some((t) => t === "injury" || t === "illness" || t === "rest") || HEALTH.test(txt)) add(row.side === "over" ? "bad" : "warn", `Health news: "${n.headline}"`);

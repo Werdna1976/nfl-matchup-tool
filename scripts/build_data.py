@@ -742,7 +742,8 @@ def load_rosters(season, info=None):
             out.setdefault(x.gsis_id, {})[int(x.week)] = x.status
             if info is not None:
                 info[x.gsis_id] = {"name": x.full_name, "team": x.team, "pos": x.position, "status": x.status,
-                                   "img": x.headshot_url if isinstance(x.headshot_url, str) else None}
+                                   "img": x.headshot_url if isinstance(x.headshot_url, str) else None,
+                                   "espn": str(int(x.espn_id)) if not pd.isna(x.espn_id) else None}
     return out
 
 
@@ -1157,6 +1158,13 @@ def build(season):
             games.append(game)
 
     used = {pid for g in games for side in g["players"].values() for pid in side}
+    # ESPN id: the page matches ESPN's live injury report and headlines on it, not on the name
+    # (two Justin Jeffersons: the Vikings WR and a Browns LB who is out)
+    ids = player_ids()
+    for pid in used:
+        e = (ids.get(pid) or {}).get("espn") or roster_info.get(pid, {}).get("espn")
+        if e:
+            players[pid]["espn"] = e
     for pid in used:
         players[pid]["proj"] = {k: {STAT_KEYS[c]: v for c, v in p.items()} for k, p in players[pid]["proj"].items()}
     players = {pid: p for pid, p in players.items() if pid in used}

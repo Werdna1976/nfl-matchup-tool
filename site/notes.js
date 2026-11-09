@@ -26,22 +26,23 @@ const NOTES = (() => {
   // {byId, byName} from ESPN's league injury report
   async function injuries(sport) {
     const j = await espn(sport, "injuries");
-    const byId = {}, byName = {};
+    const byId = {}, byName = {}, allByName = {};
     for (const team of j.injuries || []) for (const it of team.injuries || []) {
       const a = it.athlete || {};
       let id = a.id ? String(a.id) : null;
       if (!id) for (const l of a.links || []) { const m = /\/id\/(\d+)/.exec(l.href || ""); if (m) { id = m[1]; break; } }
       const d = it.details || {};
       const e = {
+        team: team.displayName || null,
         status: it.status || null,
         injury: [d.side && d.side !== "Not Specified" ? d.side : null, d.type].filter(Boolean).join(" ") || null,
         note: it.shortComment || null, date: (it.date || "").slice(0, 10) || null, ret: d.returnDate || null,
       };
       if (!e.status) continue;
       if (id) byId[id] = e;
-      if (a.displayName) byName[norm(a.displayName)] = e;
+      if (a.displayName) { const k = norm(a.displayName); byName[k] = e; (allByName[k] ||= []).push(e); }
     }
-    return { byId, byName, count: Object.keys(byName).length };
+    return { byId, byName, allByName, count: Object.keys(byName).length };
   }
 
   // What a story is about, by keyword (the same rules as scripts/news_build.py). Keyword rules, not
@@ -76,7 +77,8 @@ const NOTES = (() => {
       const item = { headline: a.headline || a.title, text: a.description || "", when, href: a.links?.web?.href || null, src: "ESPN" };
       item.tags = tagsFor(item.headline, item.text);
       for (const c of a.categories || []) {
-        if (c.type === "athlete" && c.description) (out[norm(c.description)] ||= []).push(item);
+        const aid = c.athleteId ?? c.athlete?.id;
+        if (c.type === "athlete" && c.description) (out[norm(c.description)] ||= []).push({ ...item, aid: aid != null ? String(aid) : null });
       }
     }
     NEWS = out;
@@ -101,10 +103,12 @@ const NOTES = (() => {
     return items.sort((a, b) => b.when - a.when).filter((n) => { const k = norm(n.headline).slice(0, 80); if (seen.has(k)) return false; seen.add(k); return true; });
   }
   // Everything about one player, newest first: the refresh's stories plus live ESPN headlines.
-  // pid is optional (older callers pass just a name).
-  function newsFor(name, pid) {
+  // pid is optional (older callers pass just a name). With his ESPN id, live headlines tagged with
+  // another athlete of the same name (the Browns LB Justin Jefferson) are left out.
+  function newsFor(name, pid, espnId) {
     const file = pid != null ? (FILE.players?.[pid] || []).map(fromFile) : [];
-    return dedupe([...file, ...(NEWS[norm(name)] || [])]);
+    const live = (NEWS[norm(name)] || []).filter((n) => !espnId || !n.aid || n.aid === String(espnId));
+    return dedupe([...file, ...live]);
   }
   const teamNews = (ab) => dedupe((FILE.teams?.[ab] || []).map(fromFile));
 
