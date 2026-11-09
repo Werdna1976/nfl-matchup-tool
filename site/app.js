@@ -527,15 +527,15 @@ function renderGame() {
       <div class="panel" id="spots"></div>
     </div>
     <div data-tab="game">
+      <div class="panel">
+        <div class="panel-head"><h2>Matchup strength</h2><span class="muted small">Ratings use EPA per play (points added per play) vs. the league. 0 = average.</span></div>
+        <div class="grid2">${matchupSide(g, g.away, g.home)}${matchupSide(g, g.home, g.away)}</div>
+      </div>
       <div class="grid2">
         <div class="panel" id="totalTool"></div>
         <div class="panel" id="spreadTool"></div>
       </div>
       <div class="panel" id="teamTotals"></div>
-      <div class="panel">
-        <div class="panel-head"><h2>Matchup strength</h2><span class="muted small">Ratings use EPA per play (points added per play) vs. the league. 0 = average.</span></div>
-        <div class="grid2">${matchupSide(g, g.away, g.home)}${matchupSide(g, g.home, g.away)}</div>
-      </div>
     </div>
     <div data-tab="notes">
       <div class="panel" id="notes"></div>
