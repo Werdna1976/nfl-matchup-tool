@@ -66,6 +66,15 @@ median only 40% of the time and averaged 16% under; up 25%+, 57% and 7% over. NF
 1% on the players it touches in all three seasons. NBA minutes trends matter a little (about 55% vs 44% above the
 median on rebounds and assists) and are shown, not modeled.
 
+**Partial games.** A game where a regular played under half his usual snap share (Ja'Marr Chase's 20% in 2026
+week 4, when he left hurt) pulls down his last-4 snap share and his averages. `scripts/partial_study.py` replayed
+2023-26 with those games dropped from the snap trend, and from the stat averages too, and neither made projections
+more accurate (MAE and log score unchanged overall; dropping them from the averages was 2% worse). Players with one in
+their last 4, not the latest, did beat the model by about 5%, and dropping it from the snap trend halved that, but
+the gain was too small to show up in the misses. So those games stay in, and the site marks them: "partial" in the
+Last 10 panel and the snap-share note, with the share without them. A player whose latest game was partial and who
+plays the next one averaged 14% under the model, but by season it ran 27% under to 15% over, so that's a note only.
+
 **News.** Each refresh reads free feeds, matches stories to the site's players (ESPN's own player tags, otherwise
 the full name), and tags them injury, illness, rest, role, trade/contract, morale/discipline, or returning. Team
 stories about morale or trades go under the team. Stories are kept 7 days and appear as notes, in the Last 10
@@ -165,6 +174,7 @@ cd site && python -m http.server 8000 # open http://localhost:8000
 - `scripts/news_build.py` collects player news on each refresh and writes `site/data/news.json` (before the NFL build).
 - `scripts/return_study.py` measures how much of his role a player gets back after an injury (run by hand).
 - `scripts/trend_study.py` measures whether last-4 vs last-12 trends beat the model (run by hand).
+- `scripts/partial_study.py` tests dropping partial games (left early, ejected, rested) from form (run by hand).
 - `scripts/nba_build.py` downloads NBA data, builds projections, and tests the ranges on past games.
 - `site/` is the web pages (plain HTML, CSS, JavaScript; no build step): `index.html` + `app.js` for NFL,
   `nba.html` + `nba.js` for NBA. Shared by both: `nav.js` (dark/light toggle, game tabs), `baskets.js`

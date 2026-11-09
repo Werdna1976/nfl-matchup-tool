@@ -414,6 +414,31 @@ def snap_trend(series):
     return sum(s[-4:]) / 4 / long - 1
 
 
+# A partial game: a regular (median share of snaps 50%+ over his last 12 games) who played under
+# half his usual share, e.g. Ja'Marr Chase's 20% in 2026 week 4 when he left hurt. These games
+# stay in the averages and the snap trend: scripts/partial_study.py replayed 2023-26 and dropping
+# them didn't make projections more accurate (MAE and log score unchanged overall). Players with
+# one in their last 4 (not the latest) did beat the model by about 5%, but dropping it overshot.
+# A player whose latest game was partial and who plays the next one averaged 14% under the model,
+# though it swung by season (+15% in 2026), so that is shown as a note, not modeled.
+PARTIAL_RATIO, PARTIAL_MIN = 0.5, 0.5
+
+
+def partial_games(snaps, pid):
+    """{(season offset, week): (share, his median)} for his partial games. Offset 0 is this season,
+    -1 last season. snaps: (this season, last season) from load_snaps."""
+    seq = [(o, w, v) for o, d in ((-1, snaps[1]), (0, snaps[0])) for w, v in sorted(d.get(pid, {}).items())]
+    out = {}
+    for i, (o, w, v) in enumerate(seq):
+        win = sorted(x[2] for x in seq[max(0, i - 11): i + 1])
+        if len(win) < 4:
+            continue
+        med = win[len(win) // 2]
+        if med >= PARTIAL_MIN and v < PARTIAL_RATIO * med:
+            out[(o, w)] = (v, med)
+    return out
+
+
 def project_player(games, pos, opp, teams, lg, gs, cvs, rates, calib=None, prev=None, depth=False, snap_t=None):
     """games: the player's per-game rows (oldest first). prev: his line from prev_summary().
     depth: a depth player (below the regular cutoffs). The fitted baseline is the average for
@@ -896,6 +921,18 @@ def form_line(pid, games, prev_raw, snaps, season, week, pos):
     sn = snap_series(snaps, pid, season, week + 1)[-12:]
     if len(sn) >= 6:
         out["snp4"], out["snp12"] = round(100 * sum(sn[-4:]) / 4, 1), round(100 * sum(sn) / len(sn), 1)
+        # partial games (left early, ejected, rested) among his last 4 snap games, for the notes
+        cur = [(0, w) for w in sorted(snaps[0].get(pid, {})) if w <= week]
+        last4 = ([(-1, w) for w in sorted(snaps[1].get(pid, {}))] + cur)[-4:]
+        part = partial_games(snaps, pid)
+        p4 = [k for k in last4 if k in part]
+        if p4:
+            full = [snaps[0 if o == 0 else 1][pid][w] for o, w in last4 if (o, w) not in part]
+            out["part"] = [{"w": w, "ly": o == -1, "snp": round(100 * part[(o, w)][0]),
+                            "med": round(100 * part[(o, w)][1])} for o, w in p4]
+            if full:
+                out["snp4x"] = round(100 * sum(full) / len(full), 1)   # last 4 without them
+            out["part_last"] = last4[-1] in part
         st = snap_trend(sn)
         if st is not None:
             out["st"] = round(st, 3)
@@ -940,6 +977,7 @@ def build(season):
         g = g.sort_values("week")
         last = g.iloc[-1]
         log = []
+        part = partial_games(snaps, pid)
         for r in g.itertuples():
             row = {"w": int(r.week), "opp": r.opponent_team, "tm": r.team}
             for col, short in STAT_KEYS.items():
@@ -955,6 +993,8 @@ def build(season):
             sp = snaps[0].get(pid, {}).get(int(r.week))
             if sp is not None:
                 row["snp"] = int(round(sp * 100))   # share of the team's offensive snaps, in percent
+                if (0, int(r.week)) in part:
+                    row["part"] = round(100 * part[(0, int(r.week))][1])   # partial game: his usual share
             log.append(row)
         players[pid] = {"name": last.player_display_name, "pos": last.position, "team": last.team,
                         "img": last.headshot_url if isinstance(last.headshot_url, str) else None,

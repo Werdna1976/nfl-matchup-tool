@@ -9,7 +9,8 @@
 // how to read a stat from a game-log row, how to label a game, and optionally which group
 // (Passing, Shooting, ...) each stat sits under. A stat no game in the window has is left out,
 // so older data files without the extra box-score columns still open cleanly.
-// Clicking the same bet's "Last 10" chip again closes the panel.
+// Clicking the same bet's "Last 10" chip again closes the panel. config.flag(row), if set, marks
+// a game to read with care (NFL partial games) with a tag and a hover note.
 
 const TREND = (() => {
   const N = 10;
@@ -69,7 +70,8 @@ const TREND = (() => {
     [0, maxV / 2].forEach((t) => { s += `<text x="${padL - 4}" y="${y(t) + 3}" text-anchor="end">${Math.round(t)}</text><line x1="${padL}" x2="${W}" y1="${y(t)}" y2="${y(t)}" stroke="var(--line)" />`; });
     rows.forEach((r, i) => {
       const v = vals[i], x = padL + i * bw + 3, hit = line == null ? null : side === "under" ? v < line : v > line;
-      s += `<rect x="${x}" y="${y(v)}" width="${bw - 6}" height="${Math.max(0, y(0) - y(v))}" rx="2" fill="${hit == null ? "var(--bar)" : hit ? "var(--good)" : "var(--bar)"}" opacity="${hit === false ? 0.55 : 1}"><title>${esc(config.when(r))}: ${v}</title></rect>`;
+      s += `<rect x="${x}" y="${y(v)}" width="${bw - 6}" height="${Math.max(0, y(0) - y(v))}" rx="2" fill="${hit == null ? "var(--bar)" : hit ? "var(--good)" : "var(--bar)"}" opacity="${hit === false ? 0.55 : 1}"><title>${esc(config.when(r))}: ${v}${config.flag?.(r) ? ` (${esc(config.flag(r))})` : ""}</title></rect>`;
+      if (config.flag?.(r)) s += `<text x="${x + (bw - 6) / 2}" y="${y(v) - 14}" text-anchor="middle" class="part-svg">partial</text>`;
       s += `<text x="${x + (bw - 6) / 2}" y="${y(v) - 3}" text-anchor="middle" class="v">${v}</text>`;
       const [a, b] = config.when(r, true);
       s += `<text x="${x + (bw - 6) / 2}" y="${H - 16}" text-anchor="middle">${esc(a)}</text><text x="${x + (bw - 6) / 2}" y="${H - 4}" text-anchor="middle">${esc(b)}</text>`;
@@ -106,6 +108,7 @@ const TREND = (() => {
     const hits = rows.filter(hit).length, hitsAll = all.filter(hit).length;
     const avg = (x, rs) => { const ns = rs.map((r) => v(r, x)).filter(has); return ns.length ? ns.reduce((a, b) => a + b, 0) / ns.length : null; };
     const proj = config.proj?.(p, l, k);
+    const flag = (r) => config.flag?.(r) || "";   // a game to read with care (NFL: partial games)
     const th = (x, i) => `<th class="${x === k ? "hl" : ""}${gs(i) ? " gs" : ""}" title="${esc(config.label(x))}">${esc(config.short(x))}</th>`;
     const td = (x, i, body, extra = "") => `<td class="${x === k ? "hl" : ""}${gs(i) ? " gs" : ""}${extra}">${body}</td>`;
     let groupRow = "";
@@ -133,11 +136,12 @@ const TREND = (() => {
       <h3>Every stat, last ${rows.length} games <span class="muted small">(newest first; hover a column name for its full name)</span></h3>
       <div class="table-wrap"><table class="trend-t${grouped ? " grouped" : ""}">
         <thead>${groupRow}<tr>${grouped ? "" : "<th>Game</th>"}${cols.map(th).join("")}</tr></thead>
-        <tbody>${[...rows].reverse().map((r) => `<tr><td>${esc(config.when(r))}</td>${cols.map((x, i) => (x === k
+        <tbody>${[...rows].reverse().map((r) => `<tr${flag(r) ? ' class="partial"' : ""}><td${flag(r) ? ` title="${esc(flag(r))}"` : ""}>${esc(config.when(r))}${flag(r) ? ' <span class="part-mark">partial</span>' : ""}</td>${cols.map((x, i) => (x === k
           ? td(x, i, `<b>${cell(v(r, k))}</b>`, hit(r) ? " edge-good" : " edge-bad")
           : td(x, i, cell(v(r, x))))).join("")}</tr>`).join("")}
         <tr class="sum"><td>Average</td>${cols.map((x, i) => td(x, i, x === k ? `<b>${fmt(avg(x, rows), 1)}</b>` : fmt(avg(x, rows), 1))).join("")}</tr></tbody>
       </table></div>
+      ${rows.some(flag) ? `<div class="muted small">"partial" = he played under half his usual share of snaps (left hurt, ejected, or rested in a blowout). Hover the game for details. Those games still count in the projection: leaving them out didn't backtest better.</div>` : ""}
       <h3>Trends</h3>
       <div class="sparks">${others.map((x) => `<div class="sp"><div class="small"><b title="${esc(config.label(x))}">${esc(config.short(x))}</b> <span class="muted">avg ${fmt(avg(x, rows), 1)}</span></div>${spark(rows, x)}</div>`).join("")}</div>
       <div class="trend-foot">${config.more ? `<button type="button" class="btn" data-more>Full player page</button>` : ""}${l.url ? `<a class="btn" href="${esc(l.url)}" target="_blank" rel="noopener" title="${esc(l.src || "")}">Open on Polymarket ↗</a>` : ""}</div>`;

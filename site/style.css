@@ -374,6 +374,9 @@ table.tt tr.grp-row td { text-align: left; font-weight: 600; color: var(--muted)
 .trend-svg text.v { fill: var(--text); font-size: 10.5px; }
 table.trend-t th.hl, table.trend-t td.hl { background: var(--band50); }
 table.trend-t { font-size: 0.92em; }
+table.trend-t tr.partial td { opacity: 0.7; }
+.part-mark { font-size: 0.78em; padding: 0 4px; border-radius: 6px; border: 1px solid var(--warn, #b7791f); color: var(--warn, #b7791f); }
+.trend-svg text.part-svg { fill: var(--warn, #b7791f); font-size: 10px; }
 table.trend-t td, table.trend-t th { text-align: right; white-space: nowrap; padding-left: 5px; padding-right: 5px; }
 table.trend-t td:first-child, table.trend-t thead th[rowspan], table.trend-t:not(.grouped) th:first-child { text-align: left; }
 table.trend-t tr.grp th { text-align: center; font-size: 0.85em; color: var(--muted); }
