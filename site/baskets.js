@@ -82,8 +82,9 @@ const BASKETS = (() => {
   async function leagueEvents(A) {
     const c = LISTS[A.league];
     if (c && Date.now() - c.t < CACHE_MS) return c.events;
-    const since = addDays(etDay(Date.now()), -14);
-    const events = await getJson(`${GAMMA}/events?tag_slug=${A.league}&closed=false&limit=500&start_date_min=${since}T00:00:00Z`);
+    // events that haven't ended yet (Polymarket rejects a start_date_min with a time on it, which
+    // made this list fail every time)
+    const events = await getJson(`${GAMMA}/events?tag_slug=${A.league}&closed=false&limit=500&end_date_min=${etDay(Date.now())}`);
     LISTS[A.league] = { t: Date.now(), events: Array.isArray(events) ? events : [] };
     return LISTS[A.league].events;
   }
@@ -117,13 +118,17 @@ const BASKETS = (() => {
   async function findEvents(A, g) {
     const found = new Map();
     let reached = false;
+    // Player props live in their own event next to the game's: nfl-was-nyg-2026-11-13 holds the
+    // moneyline, spreads, and totals, nfl-was-nyg-2026-11-13-player-props holds the props.
     outer: for (const day of slugDays(A, g).reverse()) for (const a of A.codes(g.away)) for (const h of A.codes(g.home)) {
-      try {
-        const j = await getJson(`${GAMMA}/events?slug=${A.league}-${a}-${h}-${day}`);
+      const base = `${A.league}-${a}-${h}-${day}`;
+      const got = await Promise.all([base, `${base}-player-props`].map((slug) => getJson(`${GAMMA}/events?slug=${slug}`).catch(() => null)));
+      for (const j of got) {
+        if (!j) continue;
         reached = true;
-        for (const e of j || []) if (!Array.isArray(e.markets) || eventMatches(A, g, e)) found.set(String(e.id), e);
-        if (found.size) break outer;
-      } catch (e) { /* try the next spelling */ }
+        for (const e of j) if (!Array.isArray(e.markets) || eventMatches(A, g, e)) found.set(String(e.id), e);
+      }
+      if (found.size) break outer;
     }
     try {
       for (const e of await leagueEvents(A)) if (eventMatches(A, g, e)) found.set(String(e.id), e);
