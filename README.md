@@ -139,7 +139,7 @@ The NBA model projects minutes (lineups fitted to 240 per team, teammates out ha
 multiplies by per-minute production adjusted for pace, opponent, and the implied team score. Its 80% ranges
 caught about 79% of past results.
 
-Polymarket prices are pulled on game day (NBA), from the day before (NFL), or any time a game starts within
+Polymarket prices are pulled on game day (NBA), from 4 days before kickoff (NFL), or any time a game starts within
 24 hours, and re-pulled every 2 minutes while a page is open.
 
 ## Where the data comes from

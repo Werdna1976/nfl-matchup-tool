@@ -1,7 +1,8 @@
 "use strict";
 
 // The Best bets view, shared by the NFL and NBA pages: the Lock of the week / day (locks.js) on
-// top, then the best underpriced props across every game today and tomorrow.
+// top, then the best underpriced props across every game whose prices are open: today and
+// tomorrow, or as far ahead as the sport pulls Polymarket (4 days for the NFL).
 //
 // Each game is pulled from Polymarket the same way its own "Mispriced props" section is
 // (BASKETS.pull + legsFromMarkets + underpriced): real listed lines, $20 of depth near the ask,
@@ -22,6 +23,8 @@ const ALLPROPS = (() => {
   const cents = (p) => `${Math.round(p * 100)}¢`;
   const etDay = (ms) => new Date(ms).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
   const addDays = (day, n) => { const d = new Date(`${day}T12:00:00Z`); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+  const weekday = (day) => new Date(`${day}T12:00:00Z`).toLocaleDateString(undefined, { weekday: "long", timeZone: "UTC" });
+  const dayLabel = (day, today) => (day === today ? "Today" : day === addDays(today, 1) ? "Tomorrow" : weekday(day));
   const clock = (ms) => new Date(ms).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 
   let sortMode = "best", lockDay = null;
@@ -39,7 +42,7 @@ const ALLPROPS = (() => {
   // one game: its status line and its underpriced rows, each tagged with the game
   async function scan(g, A, today) {
     const day = A.gameDay(g), when = A.kickoff(g);
-    const info = { g, A, day, when, dayTxt: day === today ? "Today" : "Tomorrow", match: `${g.away} @ ${g.home}`, rows: [] };
+    const info = { g, A, day, when, dayTxt: dayLabel(day, today), match: `${g.away} @ ${g.home}`, rows: [] };
     const win = BASKETS.pullWindow(A, g);
     if (!win.open) { info.status = A.isLive(g) ? "under way" : A.isPost(g) ? "over" : "prices not pulled yet"; info.why = win.why; return info; }
     const rec = await BASKETS.pull(A, g);
@@ -74,15 +77,19 @@ const ALLPROPS = (() => {
 
   async function render(el, { games, adapter, onOpen, sport }) {
     const token = (el._apToken = {});
-    const now = Date.now(), today = etDay(now), tomorrow = addDays(today, 1);
+    // today and tomorrow, or further out when the sport pulls prices earlier (NFL: 4 days)
+    const now = Date.now(), today = etDay(now);
+    const ahead = Math.max(1, ...games.map((g) => adapter(g).daysBefore || 0));
+    const last = addDays(today, ahead);
+    const span = ahead > 1 ? `the next ${ahead + 1} days` : "today and tomorrow";
     const list = games.map((g) => ({ g, A: adapter(g) }))
-      .filter(({ g, A }) => [today, tomorrow].includes(A.gameDay(g)) && !A.isPost(g))
+      .filter(({ g, A }) => A.gameDay(g) >= today && A.gameDay(g) <= last && !A.isPost(g))
       .sort((x, y) => x.A.kickoff(x.g) - y.A.kickoff(y.g));
     const head = (status, canRefresh) => `<div class="panel-head"><h2>Best bets · ${esc(sport)}</h2>${canRefresh ? `<button type="button" class="btn" data-ap-refresh>Refresh prices</button>` : ""}</div><div class="muted small status">${status}</div>`;
-    if (!list.length) { el.innerHTML = head("") + `<div class="empty">No ${esc(sport)} games left today or tomorrow. The lock and the best props show up once a game day is within reach (the day before for the NFL, game day for the NBA).</div>`; return; }
+    if (!list.length) { el.innerHTML = head("") + `<div class="empty">No ${esc(sport)} games left in ${span}. The lock and the best props show up once a game day is within reach (4 days before kickoff for the NFL, game day for the NBA).</div>`; return; }
     if (!el.dataset.apShown) el.innerHTML = head(`Pulling Polymarket prices for ${list.length} game${list.length > 1 ? "s" : ""}…`) + `<div class="empty">Checking each game's markets. This takes a few seconds.</div>`;
 
-    const infos = await pool(list, POOL, ({ g, A }) => scan(g, A, today).catch(() => ({ g, A, day: A.gameDay(g), when: A.kickoff(g), dayTxt: A.gameDay(g) === today ? "Today" : "Tomorrow", match: `${g.away} @ ${g.home}`, rows: [], status: "couldn't check" })));
+    const infos = await pool(list, POOL, ({ g, A }) => scan(g, A, today).catch(() => ({ g, A, day: A.gameDay(g), when: A.kickoff(g), dayTxt: dayLabel(A.gameDay(g), today), match: `${g.away} @ ${g.home}`, rows: [], status: "couldn't check" })));
     if (el._apToken !== token) return;   // a newer render took over
     el.dataset.apShown = "1";
 
@@ -95,13 +102,13 @@ const ALLPROPS = (() => {
       : "No game's prices are open yet.";
 
     const chips = infos.map((i) => `<button type="button" class="note-chip ap-chip ${i.rows.length ? "good" : ""}" data-open="${esc(i.g.id)}" title="${esc(i.why || "Open this game")}"><b>${esc(i.match)}</b> ${i.dayTxt} ${esc(clock(i.when))} · ${esc(i.status)}</button>`).join("");
-    const intro = `<h2 class="ap-h">Best mispriced props <span class="muted lk-day">today and tomorrow</span></h2><div class="muted small">Single bets where the model's fair price is at least ${Math.round(BASKETS.UNDER_MIN_EDGE * 100)}¢ above Polymarket's, from every ${esc(sport)} game today and tomorrow. Flagged bets stay in the list with their likely issue named. Click a game to open it, or a player's bet (or its <b>Last 10</b> button) to see his last 10 games.</div>
+    const intro = `<h2 class="ap-h">Best mispriced props <span class="muted lk-day">${span}</span></h2><div class="muted small">Single bets where the model's fair price is at least ${Math.round(BASKETS.UNDER_MIN_EDGE * 100)}¢ above Polymarket's, from every ${esc(sport)} game in ${span}. Flagged bets stay in the list with their likely issue named. Click a game to open it, or a player's bet (or its <b>Last 10</b> button) to see his last 10 games.</div>
       ${BASKETS.how(`Same rules as each game's Mispriced props: real listed lines only, each takes a $${BASKETS.STAKE} bet near the price shown, one row per line ladder, long shots under ${Math.round(BASKETS.LOTTO_MAX * 100)}¢ left out.<br><br>${VET.RULES}`)}`;
     const sorter = `<div class="ap-sort"><span class="muted small">Order:</span>
       <button type="button" class="chip" data-ap-sort="best" aria-pressed="${sortMode === "best"}">Best first</button>
       <button type="button" class="chip" data-ap-sort="game" aria-pressed="${sortMode === "game"}">By game</button></div>`;
 
-    // the lock: one day's games (today or tomorrow), default the day with the most open games
+    // the lock: one day's games (any day in the window), default the day with the most open games
     const dayList = [...new Set(infos.map((i) => i.day))].map((day) => {
       const gs = infos.filter((i) => i.day === day);
       return { day, n: gs.length, open: gs.filter((i) => i.ok).length };
@@ -117,7 +124,7 @@ const ALLPROPS = (() => {
     if (blocked) waiting = "Polymarket is blocked on this network, so there are no prices to build a lock from.";
     else if (!dayInfos.some((i) => i.ok)) {
       const shut = dayInfos.find((i) => i.why && !i.rec);
-      waiting = shut ? shut.why : `Polymarket hasn't posted player props for these games yet. ${sport === "NBA" ? "NBA props often go up only on game day." : "NFL props usually go up the day before."}`;
+      waiting = shut ? shut.why : `Polymarket hasn't posted player props for these games yet. ${sport === "NBA" ? "NBA props often go up only on game day." : "Prices are pulled from 4 days before kickoff, but NFL player props often go up only a day or two ahead."}`;
     } else {
       lockRes = await LOCKS.build(dayInfos);
       if (el._apToken !== token) return;
