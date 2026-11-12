@@ -7,7 +7,7 @@
 //    a leg costs what you'd pay to buy it now (the ask), not the midpoint.
 // 2. Simulate the game a few thousand times so legs that move together really do move
 //    together, with weights fitted to past seasons (see simulate()).
-// 3. Show the mispriced single bets (the model's fair price beats Polymarket's), the negative
+// 3. Show the spread + total combo (combo.js), the mispriced single bets (the model's fair price beats Polymarket's), the negative
 //    correlation multipliers (pairs that pull apart, pairs.js), and lottery tickets. locks.js reuses the legs, the
 //    simulation, and the storylines below to build the cross-game Lock combos.
 //
@@ -611,7 +611,9 @@ const BASKETS = (() => {
     // single bets first (the steadiest edge), then negative correlation multipliers (pairs that pull apart), then
     // the long shots. The storyline baskets were retired (Andrew, 2026-11-04: "the scenarios
     // aren't working well"); stories() stays because the locks use it to keep same-game legs consistent.
-    el.innerHTML = head(status, win.open) + underpricedHtml(under, priced) + PAIRS.html(legs, priced) + lotteryHtml(lottery(legs, priced), priced);
+    // the spread + total combo (combo.js) goes first: it only needs the game's spread and total markets
+    const combo = typeof COMBO !== "undefined" ? COMBO.html(A, g, rec) : "";
+    el.innerHTML = head(status, win.open) + combo + underpricedHtml(under, priced, !combo) + PAIRS.html(legs, priced) + lotteryHtml(lottery(legs, priced), priced);
     el.querySelectorAll("[data-lotto-g]").forEach((btn) => (btn.onclick = () => {
       el.querySelectorAll(`.lotto [data-g="${btn.dataset.lottoG}"]`).forEach((c) => c.classList.toggle("off"));
     }));
@@ -719,8 +721,8 @@ const BASKETS = (() => {
     return counts + underTable(sorted, gameCol);
   }
 
-  function underpricedHtml(list, priced) {
-    const box = (body) => `<div class="lotto first"><h3>Mispriced props</h3>${body}</div>`;
+  function underpricedHtml(list, priced, first = true) {
+    const box = (body) => `<div class="lotto${first ? " first" : ""}"><h3>Mispriced props</h3>${body}</div>`;
     if (!priced) return box(`<div class="empty">Single bets where the model's fair price beats Polymarket's show here once Polymarket posts player props for this game (game day for the NBA, up to 4 days before kickoff for the NFL, though NFL props are often posted later).</div>`);
     return box(`<div class="muted small">Single bets where the model's fair price is at least ${Math.round(UNDER_MIN_EDGE * 100)}¢ above Polymarket's, so Polymarket pays more than the bet is worth. Trust the <b>Check</b> column over the raw edge. Click a player's bet (or its <b>Last 10</b> button) to see his last 10 games.</div>
       ${how(`Each line ladder (a spread, a total, one player's stat) is one row: its best-priced line, with the range of lines that are also cheap. Every row can take a $${STAKE} bet near the price shown. The list is mixed: up to two stats per player, one row per side of the game result and per total, and at most four of any one kind of bet. Long shots under ${Math.round(LOTTO_MAX * 100)}¢ are in Lottery tickets below.<br><br>${VET.RULES}`)}
