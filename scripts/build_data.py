@@ -961,6 +961,63 @@ def apply_news(listed, gid, players, news, since, touched):
             "txt": f"{'Bigger' if up else 'Smaller'} role in the news: {'+' if up else '-'}{round(abs(r - 1) * 100)}% on his volume (a set nudge, not backtested)"})
 
 
+# ---------------------------------------------------------------- one starting QB
+
+# Every QB on the page used to get a projection from his own games, so a team with two QBs who
+# have both started this season showed two starters' passing lines (week 10: Giants' J.J.
+# McCarthy and Jameis Winston both ~23 attempts; Vikings' Cousins, Murray and Wentz all ~30).
+# Now one QB per team is the starter and the others get a backup's line. In 2023-25 a team's
+# backup QBs threw 0.9 passes a game (5 yards) when the starter started: 2.9% of the team's
+# throws, and 10+ attempts in only 4% of games. If the starter is out or doubtful, the page
+# (app.js adjustForInjuries) hands his line to the next QB in game["qbs"][team].
+BACKUP_QB_SHARE = 0.03
+
+
+def _qb_starts(p, team=None):
+    """Weeks this season he started (half the snaps or more; 15+ attempts without snap counts)."""
+    out = []
+    for l in p.get("log") or []:
+        if team is not None and l.get("tm") != team:
+            continue
+        snp = l.get("snp")
+        if (snp >= 50) if snp is not None else (l.get("att") or 0) >= 15:
+            out.append(l["w"])
+    return out
+
+
+def qb_order(qbs, players, tm, gid, on_ir):
+    """The team's QBs, likeliest starter first. Injuries don't move a QB down here (the page reads
+    the live injury report and hands an out starter's volume to the next QB); injured reserve does.
+      1. depth-chart QB1 who has started a game this season (a returning or traded-in starter)
+      2. whoever started this team's most recent game
+      3. depth-chart order, then projected attempts"""
+    def key(pid):
+        p = players[pid]
+        team_starts = _qb_starts(p, tm)
+        att = ((p["proj"].get(gid) or {}).get("attempts") or {}).get("mean", 0)
+        return (on_ir(pid), not (p.get("dc") == 1 and _qb_starts(p)), -max(team_starts, default=0),
+                p.get("dc") or 99, -att)
+    return sorted(qbs, key=key)
+
+
+def apply_backup_qbs(order, gid, players):
+    """Scale every QB after the starter down to a backup's line (all of his stats)."""
+    for pid in order[1:]:
+        proj = players[pid]["proj"].get(gid)
+        if not proj:
+            continue
+        a = (proj.get("attempts") or {}).get("mean", 0)
+        for c in [c for c, _ in POSITION_STATS["QB"] if c in proj]:
+            d = proj[c]
+            d["mean"] = round(d["mean"] * BACKUP_QB_SHARE, 3)
+            d["sd"] = round(math.sqrt(d["mean"]), 3) if d.get("dist") == "poisson" else round(max(d["sd"] * BACKUP_QB_SHARE, 0.5), 2)
+        if a >= 5:
+            players[pid].setdefault("adj", {}).setdefault(gid, []).append({
+                "kind": "backup", "by": order[0], "f": {"att": BACKUP_QB_SHARE},
+                "chg": {"att": [round(a, 2), round(proj["attempts"]["mean"], 2)]},
+                "txt": f"Behind {players[order[0]]['name']}: backup QBs throw about 1 pass a game when the starter plays"})
+
+
 def form_line(pid, games, prev_raw, snaps, season, week, pos):
     """Last 4 vs. last 12 games (across seasons) for his main stats and snap share, for the page's
     form notes. Only the snap-share trend moves the projection (see SNAP_DOWN); streaks in the
@@ -1108,7 +1165,7 @@ def build(season):
                 "roof": r.roof, "wind": None if pd.isna(r.wind) else int(r.wind),
                 "temp": None if pd.isna(r.temp) else int(r.temp),
                 "model": gm, "script": {}, "team_model": {}, "share": {}, "rest": rest,
-                "players": {home: [], away: []},
+                "players": {home: [], away: []}, "qbs": {},
             }
             if not pd.isna(r.home_score) and not pd.isna(r.away_score):
                 game.update(final=True, home_score=int(r.home_score), away_score=int(r.away_score))
@@ -1154,6 +1211,17 @@ def build(season):
                         apply_news(listed, r.game_id, players, news, since, touched)
                     except Exception as e:   # never let the news side stop a refresh
                         print(f"return/news adjustment skipped for {tm} {r.game_id}: {type(e).__name__}: {e}")
+                # one starting QB; the others get a backup's line
+                qbs = qb_order([pid for pid in listed if players[pid]["pos"] == "QB"], players, tm, r.game_id, on_ir)
+                if qbs:
+                    game["qbs"][tm] = qbs
+                    if qbs[0] not in regular:
+                        # a starter with few or no throws this season (new starter, traded in, or
+                        # the starter went on IR): a starter's baseline, not a backup's
+                        pg = stats[(stats.player_id == qbs[0]) & (stats.week < w)].sort_values("week")
+                        players[qbs[0]]["proj"][r.game_id] = project_player(pg, "QB", opp, teams, lg, gs, cvs, rates, calib,
+                                                                             prev.get(qbs[0]))
+                    apply_backup_qbs(qbs, r.game_id, players)
                 game["players"][tm].extend(listed)
             games.append(game)
 
