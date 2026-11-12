@@ -135,6 +135,16 @@ mixes "normal" and occasional "dud" games so the upper tail isn't stretched. Its
 2026 (about 10% of results land above its 90th percentile). Refit once a season with
 `python scripts/fit_model.py` (about 15 minutes).
 
+**Spread + total combo.** Each game's Bets tab (and the Best bets view, one per game) shows a spread bet and a
+total bet bought together that pay 3x-5x. The chance both hit comes from `site/combo.js`, fitted and backtested by
+`scripts/combo_fit.py` (run once a season; writes `site/combodata.js`). NFL: past games since 2006 with a similar
+spread and total, shifted onto this game's lines, so key numbers (3, 7) come through; on 2015-2026 games it never
+saw, it beat plain bell curves, and combos it gave 27% and 32% hit 27% and 33%. NBA: plain bell curves (margin
+12.5, total 18) did as well as anything fitted on 6,000+ games. "Favorite covers" and "over" are nearly unrelated
+in both sports (correlation 0.05 NFL, 0.01 NBA). Betting the model's favorite combo against closing sportsbook odds
+lost about 8% (NFL 2010-2025), so the edge has to come from Polymarket's prices, which is what the combo's return
+measures (model blended 50/50 with Polymarket's midpoint, as in the pressure test).
+
 The NBA model projects minutes (lineups fitted to 240 per team, teammates out handed to the rest), then
 multiplies by per-minute production adjusted for pace, opponent, and the implied team score. Its 80% ranges
 caught about 79% of past results.
@@ -184,9 +194,10 @@ cd site && python -m http.server 8000 # open http://localhost:8000
 - `scripts/return_study.py` measures how much of his role a player gets back after an injury (run by hand).
 - `scripts/trend_study.py` measures whether last-4 vs last-12 trends beat the model (run by hand).
 - `scripts/partial_study.py` tests dropping partial games (left early, ejected, rested) from form (run by hand).
+- `scripts/combo_fit.py` fits and backtests the spread + total combo model and writes `site/combodata.js` (run by hand).
 - `scripts/nba_build.py` downloads NBA data, builds projections, and tests the ranges on past games.
 - `site/` is the web pages (plain HTML, CSS, JavaScript; no build step): `index.html` + `app.js` for NFL,
   `nba.html` + `nba.js` for NBA. Shared by both: `nav.js` (dark/light toggle, game tabs), `baskets.js`
   (Polymarket pull, simulation, mispriced props, lottery), `pairs.js` (negative correlation multipliers),
   `trend.js` (the last-10-games side panel), `vet.js` (pressure test), `locks.js`
-  (Lock of the week/day), `allprops.js` (Best bets view), `notes.js`, `roles.js`, `result.js`.
+  (Lock of the week/day), `combo.js` + `combodata.js` (spread + total combo), `allprops.js` (Best bets view), `notes.js`, `roles.js`, `result.js`.

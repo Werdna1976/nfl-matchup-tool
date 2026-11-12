@@ -44,9 +44,11 @@ const ALLPROPS = (() => {
     const day = A.gameDay(g), when = A.kickoff(g);
     const info = { g, A, day, when, dayTxt: dayLabel(day, today), match: `${g.away} @ ${g.home}`, rows: [] };
     const win = BASKETS.pullWindow(A, g);
-    if (!win.open) { info.status = A.isLive(g) ? "under way" : A.isPost(g) ? "over" : "prices not pulled yet"; info.why = win.why; return info; }
+    const combo = (rec) => { try { info.combo = COMBO.pick(A, g, rec); } catch (e) { /* the props still show */ } };
+    if (!win.open) { info.status = A.isLive(g) ? "under way" : A.isPost(g) ? "over" : "prices not pulled yet"; info.why = win.why; if (!A.isLive(g)) combo(null); return info; }
     const rec = await BASKETS.pull(A, g);
     info.rec = rec;
+    combo(rec);
     const priced = rec.markets.some((m) => m.kind === "player");
     if (rec.src === "blocked") { info.status = "Polymarket unreachable"; return info; }
     if (!priced) { info.status = "no player props posted yet"; return info; }
@@ -150,7 +152,7 @@ const ALLPROPS = (() => {
     // the per-game status chips fold away once every game has its props
     const missing = infos.filter((i) => !i.ok).length;
     const chipBox = `<details class="how ap-games"${missing && !blocked ? " open" : ""}><summary>${infos.length - missing} of ${infos.length} games checked have props · show games</summary><div class="ap-chips note-chips">${chips}</div></details>`;
-    el.innerHTML = head(status, true) + chipBox + lockHtml + `<section class="ap-sec">` + intro + sorter + body + `</section>`;
+    el.innerHTML = head(status, true) + chipBox + lockHtml + comboHtml(infos) + `<section class="ap-sec">` + intro + sorter + body + `</section>`;
     el.querySelectorAll("[data-open]").forEach((b) => (b.onclick = () => onOpen(b.dataset.open)));
     el.querySelectorAll("[data-lock-day]").forEach((b) => (b.onclick = () => { lockDay = b.dataset.lockDay; render(el, { games, adapter, onOpen, sport }); }));
     el.querySelectorAll("[data-ap-sort]").forEach((b) => (b.onclick = () => {
@@ -163,6 +165,20 @@ const ALLPROPS = (() => {
     if (rb) rb.onclick = again;
     clearTimeout(el._apTimer);
     el._apTimer = setTimeout(() => { if (el.isConnected && el._apToken === token) again(); }, REPRICE_MS);
+  }
+
+  // the spread + total combo (combo.js): the top one for each game, priced games first, then previews
+  function comboHtml(infos) {
+    if (typeof COMBO === "undefined") return "";
+    const has = infos.filter((i) => i.combo?.picks?.length);
+    if (!has.length) return "";
+    const col = (c) => `<td class="ap-game"><button type="button" class="linkish" data-open="${esc(c.gi.g.id)}" title="Open this game">${esc(c.gi.match)}</button><div class="muted small">${c.gi.dayTxt} ${esc(clock(c.gi.when))}</div></td>`;
+    const part = (list, isPriced) => (list.length ? COMBO.table({ priced: isPriced, picks: list.map((i) => ({ ...i.combo.picks[0], gi: i })) }, col) : "");
+    const priced = has.filter((i) => i.combo.priced), pre = has.filter((i) => !i.combo.priced);
+    return `<section class="ap-sec combo-sec"><h2 class="ap-h">Spread + total combos <span class="muted lk-day">one per game, ${COMBO.MIN_PAY}x or more</span></h2>
+      <div class="muted small">For each game, the likeliest spread + total pair priced at or above fair (red: nothing is, so it's the closest to fair and a pass). Open a game for more choices.</div>
+      ${BASKETS.how(`${COMBO.HOW}<br><br>${COMBO.testedTxt()}`, "How these are picked and tested")}
+      ${part(priced, true)}${pre.length ? `<div class="muted small" style="margin-top:8px">Previews from the model (no Polymarket spread and total prices yet): bet one only if Polymarket pays at least the "bet if" number.</div>${part(pre, false)}` : ""}</section>`;
   }
 
   return { render, best };

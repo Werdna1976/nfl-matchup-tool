@@ -405,3 +405,12 @@ table.ld-t td.ld-notes { white-space: normal; min-width: 260px; color: var(--mut
 .ld-swing { font-size: 12px; font-weight: 600; padding: 1px 7px; border-radius: 999px; background: var(--panel-2); }
 .ld-swing.high { color: var(--warn); }
 .ld-swing.low { color: var(--muted); }
+
+/* spread + total combo (combo.js) */
+.lotto.combo { border: 1px solid var(--accent); border-radius: 8px; padding: 10px 12px; margin-top: 10px; }
+.lotto.first.combo { margin-top: 4px; }
+.combo-t .lt-leg { max-width: 340px; }
+.combo-t td { vertical-align: top; }
+tr.combo-neg td { opacity: 0.85; }
+tr.combo-neg td.lt-leg > .muted:first-child, .combo-warn { color: var(--bad); }
+.badge.alt { background: var(--accent); color: #fff; }
