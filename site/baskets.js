@@ -3,7 +3,7 @@
 // Polymarket bets for one game, shared by the NFL and NBA pages.
 //
 // 1. Pull Polymarket's prop and game markets for a game, but only when they are worth reading:
-//    on game day for the NBA, from the day before for the NFL. Prices are the real order book:
+//    on game day for the NBA, from 4 days before kickoff for the NFL. Prices are the real order book:
 //    a leg costs what you'd pay to buy it now (the ask), not the midpoint.
 // 2. Simulate the game a few thousand times so legs that move together really do move
 //    together, with weights fitted to past seasons (see simulate()).
@@ -60,15 +60,16 @@ const BASKETS = (() => {
 
   // ---------------------------------------------------------------- when to pull
 
-  // NBA prices only firm up on game day and NFL prices the day before, so nothing is pulled
-  // earlier than that.
+  // NBA props go up on game day, so nothing is pulled earlier than that. NFL games are pulled
+  // from 4 days before kickoff (daysBefore in the page's adapter), so a Sunday game's markets
+  // show from Wednesday; player props may still be thin or missing that early.
   function pullWindow(A, g) {
     const day = A.gameDay(g), first = addDays(day, -A.daysBefore), today = etDay(Date.now());
     if (A.isPost(g)) return { open: false, why: "This game is over, so there's nothing left to bet." };
     if (A.isLive(g)) return { open: false, why: "This game is under way. Polymarket's prices now move with the score, and the model is pre-game, so prices aren't pulled." };
-    // open on game day (NBA) or the day before (NFL), or any time the game starts within 24 hours
+    // open from daysBefore days ahead (0 = game day), or any time the game starts within 24 hours
     const soon = A.kickoff(g) - Date.now() < 24 * 3600 * 1000;
-    if (today < first && !soon) return { open: false, why: `Polymarket prices are pulled ${A.daysBefore ? "from the day before kickoff" : "on game day"} or within 24 hours of the start, starting ${niceDay(first)}.` };
+    if (today < first && !soon) return { open: false, why: `Polymarket prices are pulled ${A.daysBefore ? `from ${A.daysBefore === 1 ? "the day" : `${A.daysBefore} days`} before kickoff` : "on game day"} or within 24 hours of the start, starting ${niceDay(first)}.` };
     return { open: true };
   }
 
@@ -715,7 +716,7 @@ const BASKETS = (() => {
 
   function underpricedHtml(list, priced) {
     const box = (body) => `<div class="lotto first"><h3>Mispriced props</h3>${body}</div>`;
-    if (!priced) return box(`<div class="empty">Single bets where the model's fair price beats Polymarket's show here once Polymarket posts player props for this game (game day for the NBA, the day before for the NFL, or within 24 hours of the start).</div>`);
+    if (!priced) return box(`<div class="empty">Single bets where the model's fair price beats Polymarket's show here once Polymarket posts player props for this game (game day for the NBA, up to 4 days before kickoff for the NFL, though NFL props are often posted later).</div>`);
     return box(`<div class="muted small">Single bets where the model's fair price is at least ${Math.round(UNDER_MIN_EDGE * 100)}¢ above Polymarket's, so Polymarket pays more than the bet is worth. Trust the <b>Check</b> column over the raw edge. Click a player's bet (or its <b>Last 10</b> button) to see his last 10 games.</div>
       ${how(`Each line ladder (a spread, a total, one player's stat) is one row: its best-priced line, with the range of lines that are also cheap. Every row can take a $${STAKE} bet near the price shown. The list is mixed: up to two stats per player, one row per side of the game result and per total, and at most four of any one kind of bet. Long shots under ${Math.round(LOTTO_MAX * 100)}¢ are in Lottery tickets below.<br><br>${VET.RULES}`)}
       ${list.length ? underLists(list) : `<div class="empty">Nothing underpriced right now.</div>`}`);
